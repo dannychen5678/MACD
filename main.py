@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from flask import Flask
 import threading
 
+
 # === Telegram 設定 ===
 # 這裡是用來「發通知」給 Telegram 的設定。
 # 你可以想像成：程式一發現行情有異常，就會自動傳訊息到你 Telegram。
@@ -32,6 +33,15 @@ def get_payload():
         "SortColumn": "",
         "AscDesc": "A"
     }
+#自我保持運作
+def keep_alive(url):
+    while True:
+        try:
+            requests.get(url)
+            print("Pinged self to stay awake")
+        except:
+            pass
+        time.sleep(600)  # 每 10 分鐘 ping 一次
 
 # 發送通知給 Telegram（例如出現背離的時候）
 def send_alert(msg):
@@ -232,6 +242,11 @@ if __name__ == "__main__":
     t = threading.Thread(target=run_bot)
     t.daemon = True
     t.start()
+    
+    # 啟動 self-ping thread，防止 Render 休眠
+    t2 = threading.Thread(target=keep_alive, args=("https://macd-rx43.onrender.com",))
+    t2.daemon = True
+    t2.start()
 
     # Flask 必須綁定 0.0.0.0 才能在 Render 運行
     app.run(host="0.0.0.0", port=10000)
