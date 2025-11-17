@@ -145,6 +145,7 @@ def adaptive_lookback(df, base_min=5, base_max=15):
 # === 判斷是否出現「MACD 背離」 ===
 # 背離的意思：價格一直創高，但 MACD 沒跟著創高（或相反）
 # → 通常代表市場的動能「在減弱」，可能即將反轉。
+"""
 def check_divergence(df):
     if len(df) < 26:
         return None
@@ -184,6 +185,62 @@ def check_divergence(df):
         return "底部背離,看多警示"
     
     return None
+    """
+# === 判斷是否出現「MACD 背離」(改良版) ===
+def check_divergence(df, consecutive=3, threshold=1):
+    """
+    df: 已計算好 MACD 的 K 線 DataFrame
+    consecutive: 連續幾根 K 線才算趨勢
+    threshold: 容忍每根 K 線小幅回落或回升
+    """
+    if len(df) < 26:
+        return None
+    
+    lb, _ = adaptive_lookback(df)
+    recent = df['close'].iloc[-lb:]
+    macd_recent = df['MACD'].iloc[-lb:]
+    signal_recent = df['Signal'].iloc[-lb:]
+
+    price_diff = recent.diff().dropna()
+    
+    # 判斷價格方向（允許小幅回調）
+    price_dir = 0
+    for i in range(len(price_diff) - consecutive + 1):
+        window = price_diff.iloc[i:i+consecutive]
+        # 如果全部大於 -threshold → 算上升
+        if (window > -threshold).all():
+            price_dir = 1
+            break
+        # 如果全部小於 threshold → 算下降
+        elif (window < threshold).all():
+            price_dir = -1
+            break
+    
+    if price_dir == 0:
+        return None  # 沒有明顯方向
+
+    # 判斷 MACD 方向（仍要求連續，暫不允許回調）
+    macd_diff = macd_recent.diff().dropna()
+    if all(macd_diff > 0):
+        macd_dir = 1
+    elif all(macd_diff < 0):
+        macd_dir = -1
+    else:
+        return None
+
+    # 判斷 MACD 是否在同一區域（全正或全負）
+    macd_color = macd_recent - signal_recent
+    if not (all(macd_color > 0) or all(macd_color < 0)):
+        return None
+
+    # 背離條件
+    if price_dir == 1 and macd_dir == -1:
+        return "頂部背離,看空警示"
+    elif price_dir == -1 and macd_dir == 1:
+        return "底部背離,看多警示"
+    
+    return None
+
 # === 主程式 ===
 def main():
     print("🔍 開始監控台指期 MACD 背離訊號...")
