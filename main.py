@@ -186,6 +186,7 @@ def check_divergence(df):
     
     return None
     """
+"""
 # === 判斷是否出現「MACD 背離」(改良版) ===
 def check_divergence(df, consecutive=3, threshold=1):
     """
@@ -239,6 +240,61 @@ def check_divergence(df, consecutive=3, threshold=1):
     elif price_dir == -1 and macd_dir == 1:
         return "底部背離,看多警示"
     
+    return None
+"""
+def check_divergence(df, consecutive=3, threshold=1):
+    if len(df) < 60:
+        return None
+
+    # 動態 lookback
+    lb, _ = adaptive_lookback(df)
+
+    recent = df['close'].iloc[-lb:]
+    prev = df['close'].iloc[-lb*2:-lb]
+
+    macd_recent = df['MACD'].iloc[-lb:]
+    signal_recent = df['Signal'].iloc[-lb:]
+    macd_diff = macd_recent.diff().dropna()
+
+    # ========= ①價格是否創高/創低 =========
+    high_now = recent.max()
+    low_now = recent.min()
+    high_prev = prev.max()
+    low_prev = prev.min()
+
+    if high_now > high_prev:
+        price_dir = 1   # 價格創高 → 可能頂部背離
+    elif low_now < low_prev:
+        price_dir = -1  # 價格創低 → 可能底部背離
+    else:
+        return None
+
+    # ========= ②MACD 趨勢允許 30% 回調 =========
+    pos = (macd_diff > 0).sum()
+    neg = (macd_diff < 0).sum()
+
+    if pos >= len(macd_diff)*0.7:
+        macd_dir = 1
+    elif neg >= len(macd_diff)*0.7:
+        macd_dir = -1
+    else:
+        return None
+
+    # ========= ③MACD 顏色（允許部分交錯） =========
+    macd_color = macd_recent - signal_recent
+    pos_color = (macd_color > 0).sum()
+    neg_color = (macd_color < 0).sum()
+
+    if not (pos_color >= lb*0.7 or neg_color >= lb*0.7):
+        return None
+
+    # ========= ④背離判斷 =========
+    if price_dir == 1 and macd_dir == -1:
+        return "頂部背離,看空警示"
+
+    if price_dir == -1 and macd_dir == 1:
+        return "底部背離,看多警示"
+
     return None
 
 # === 主程式 ===
