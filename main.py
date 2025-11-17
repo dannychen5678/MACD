@@ -10,8 +10,8 @@ import threading
 # 這裡是用來「發通知」給 Telegram 的設定。
 # 你可以想像成：程式一發現行情有異常，就會自動傳訊息到你 Telegram。
 # === Telegram 設定 ===
-BOT_TOKEN = "7058013538:AAHI_fXAQ4LcNyVTIJQuyFMf8UNqJMwk87g" #創的bot token
-CHAT_ID = "8207833130" #update的chat id
+BOT_TOKEN = "8262097219:AAGEtNSYY81GrtupVILIxqTA2rnt7Z0woUo" #創的bot token
+CHAT_ID = "8414393276" #update的chat id
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
 # === 台指期 即時報價資料 來源 ===
@@ -19,11 +19,26 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 # === 台指期即時行情 URL & Payload ===
 URL = "https://mis.taifex.com.tw/futures/api/getQuoteList"
 
+#切換交易時段
+def get_market_type():
+    now = datetime.now().time()
+
+    # 一般日盤：08:45–13:45
+    if datetime.strptime("08:45", "%H:%M").time() <= now <= datetime.strptime("13:45", "%H:%M").time():
+        return "0"
+
+    # 盤後交易：15:00–05:00（跨夜）
+    # 分兩段判斷：15:00–23:59 或 00:00–05:00
+    if now >= datetime.strptime("15:00", "%H:%M").time() or now <= datetime.strptime("05:00", "%H:%M").time():
+        return "1"
+
+    # 其他時間沒有行情，維持日盤模式即可
+    return "0"
 
 # 這個 function 負責準備 API 要的「查詢格式」
 def get_payload():  
     return {
-        "MarketType": "0",  # 盤後交易時段的payload 1 ,一般交易時段要改成0
+        "MarketType": get_market_type(),  # 盤後交易時段的payload 1 ,一般交易時段要改成0
         "SymbolType": "F", # F 代表期貨
         "KindID": "1",
         "CID": "TXF",# 台指期的代號
