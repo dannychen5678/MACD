@@ -189,11 +189,6 @@ def check_divergence(df):
 """
 # === 判斷是否出現「MACD 背離」(改良版) ===
 def check_divergence(df, consecutive=3, threshold=1):
-    """
-    df: 已計算好 MACD 的 K 線 DataFrame
-    consecutive: 連續幾根 K 線才算趨勢
-    threshold: 容忍每根 K 線小幅回落或回升
-    """
     if len(df) < 26:
         return None
     
