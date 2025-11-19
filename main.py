@@ -237,6 +237,7 @@ def check_divergence(df, consecutive=3, threshold=1):
     
     return None
 """
+"""
 def check_divergence(df, consecutive=3, threshold=1):
     if len(df) < 60:
         return None
@@ -291,6 +292,54 @@ def check_divergence(df, consecutive=3, threshold=1):
         return "底部背離,看多警示"
 
     return None
+"""
+def check_divergence(df):
+    """
+    偵測價格與 MACD 的 波峰 / 波谷 背離
+    回傳：
+        "頂部背離：看空"
+        "底部背離：看多"
+        None
+    """
+
+    src = df.tail(30)  # 固定抓最近30根K線
+
+    # === 價格波峰 ===
+    prices = src['close'].values
+    price_peaks = []
+    for i in range(1, len(prices) - 1):
+        if prices[i] > prices[i-1] and prices[i] > prices[i+1]:
+            price_peaks.append((i, prices[i]))
+
+    if len(price_peaks) < 2:
+        return None
+
+    p1_idx, p1_val = price_peaks[-2]
+    p2_idx, p2_val = price_peaks[-1]
+
+    # === MACD 柱體波峰 ===
+    hist = (src['MACD'] - src['Signal']).values
+    hist_peaks = []
+    for i in range(1, len(hist) - 1):
+        if hist[i] > hist[i-1] and hist[i] > hist[i+1]:
+            hist_peaks.append((i, hist[i]))
+
+    if len(hist_peaks) < 2:
+        return None
+
+    h1_idx, h1_val = hist_peaks[-2]
+    h2_idx, h2_val = hist_peaks[-1]
+
+    # === 頂背離（看空） ===
+    if p2_val > p1_val and h2_val < h1_val:
+        return "頂部背離：看空"
+
+    # === 底背離（看多） ===
+    if p2_val < p1_val and h2_val > h1_val:
+        return "底部背離：看多"
+
+    return None
+
 
 # === 主程式 ===
 def main():
