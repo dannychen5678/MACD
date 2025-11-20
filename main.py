@@ -379,7 +379,8 @@ def main():
             if len(df_5min) >= 26:
                 df_5min = calc_macd(df_5min)
                 # 排除最後一根「尚未結束的 K 線」，避免半根線誤判
-                df_complete = df_5min.iloc[:-1]
+                df_complete = df_5min
+
 
                 # 這裡會計算最近波動幅度，並印出 Debug 訊息
                 lb, vol = adaptive_lookback(df_complete)
