@@ -105,10 +105,7 @@ def _smma(series, period):
     return smma_output
 
 def calc_impulse_macd(df, ma_len=30, sig_len=8):
-    """
-    計算 Impulse MACD（與第一段程式碼完全相同的邏輯）
-    這才是正確的指標！
-    """
+    """計算 Impulse MACD（與第一段程式碼完全相同的邏輯）"""
     # 計算 hlc3
     df['hlc3'] = (df['high'] + df['low'] + df['close']) / 3
     
@@ -120,7 +117,7 @@ def calc_impulse_macd(df, ma_len=30, sig_len=8):
     ema1 = df['hlc3'].ewm(span=ma_len, adjust=False).mean()
     df['hlc3_zlema'] = ema1.ewm(span=ma_len, adjust=False).mean()
     
-    # 計算 md（動能差）- 這是關鍵！
+    # 計算 md（動能差）
     df['md'] = np.where(
         df['hlc3_zlema'] > df['High_smma'], 
         df['hlc3_zlema'] - df['High_smma'],
@@ -135,10 +132,7 @@ def calc_impulse_macd(df, ma_len=30, sig_len=8):
     return df
 
 def check_impulse_signal(df):
-    """
-    檢查 md 與 sb 的穿越訊號（與第一段程式碼相同）
-    這才是正確的交易訊號！
-    """
+    """檢查 md 與 sb 的穿越訊號（與第一段程式碼相同）"""
     if len(df) < 2 or 'md' not in df.columns or 'sb' not in df.columns:
         return None
     
@@ -165,14 +159,30 @@ def check_impulse_signal(df):
 
 # === 主程式 ===
 def main():
-    print("🔍 開始監控台指期 Impulse MACD 訊號...")
-    print("📌 使用與第一段程式碼相同的 Impulse MACD 邏輯")
+    print("=" * 60)
+    print("🔍 開始監控台指期 Impulse MACD 訊號")
+    print("=" * 60)
+    print("📌 指標系統：Impulse MACD (與專家程式碼相同)")
+    print("📌 參數設定：ma_len=30, sig_len=8")
+    print("📌 資料頻率：5 分鐘 K 線")
+    print("📌 資料保留：48 小時（確保指標穩定）")
+    print("📌 最少需求：80 根 K 線（約 6.5 小時交易時間）")
+    print("📌 更新頻率：每 3 秒檢查一次，只記錄價格變動")
+    print("=" * 60)
+    print("\n💡 建議啟動時間：")
+    print("   - 日盤交易者：08:30 啟動 → 15:00 開始監控")
+    print("   - 夜盤交易者：08:30 啟動 → 15:00 開始監控")
+    print("   - 當天就能在夜盤使用，隔天日盤也能用")
+    print("=" * 60 + "\n")
     
     df_tick = pd.DataFrame(columns=['Close'])
     last_alert = None
     last_alert_time = datetime.min
     cooldown = timedelta(minutes=5)
     ref_price = None
+    data_ready = False
+    last_price = None  # 記錄上一次的價格
+    last_record_time = None  # 記錄上一次記錄的時間
     
     while True:
         timestamp, price, current_ref = fetch_latest_price()
@@ -181,45 +191,110 @@ def main():
             if current_ref and not ref_price:
                 ref_price = current_ref
             
-            # 確保 index 是時間格式
-            df_tick.index = pd.to_datetime(df_tick.index, errors='coerce')
-
-            # 保留最近 24 小時資料（增加資料量以確保指標穩定）
-            cutoff_time = datetime.now() - timedelta(hours=24)
-            df_tick = df_tick.loc[df_tick.index >= cutoff_time]
-
-            # 記錄價格
-            df_tick.loc[timestamp] = price
+            # 只在以下情況記錄價格：
+            # 1. 價格改變了（避免重複記錄相同價格）
+            # 2. 或者距離上次記錄超過 30 秒（避免長時間沒成交導致資料斷層）
+            should_record = False
             
-            # 重新整理成「5 分鐘 K 線」
-            df_5min = df_tick['Close'].resample('5T').ohlc()
-            df_5min['volume'] = df_tick['Close'].resample('5T').count()
+            if last_price is None or price != last_price:
+                should_record = True  # 價格改變，記錄
+            elif last_record_time is None or (timestamp - last_record_time).total_seconds() >= 30:
+                should_record = True  # 超過 30 秒沒記錄，記錄一次
+            
+            if should_record:
+                # 確保 index 是時間格式
+                df_tick.index = pd.to_datetime(df_tick.index, errors='coerce')
+
+                # 保留最近 48 小時資料
+                cutoff_time = datetime.now() - timedelta(hours=48)
+                df_tick = df_tick.loc[df_tick.index >= cutoff_time]
+
+                # 記錄價格
+                df_tick.loc[timestamp] = price
+                last_price = price
+                last_record_time = timestamp
+            
+            # 重新整理成「5 分鐘 K 線」（使用 '5min' 取代已棄用的 '5T'）
+            df_5min = df_tick['Close'].resample('5min').ohlc()
+            df_5min['volume'] = df_tick['Close'].resample('5min').count()
             df_5min.dropna(inplace=True)
             
-            print(f"📈 {timestamp.strftime('%H:%M:%S')} | 價格: {price} | Tick數: {len(df_tick)} | K線: {len(df_5min)}根")
+            # 計算資料涵蓋的時間範圍
+            if len(df_5min) > 0:
+                data_hours = (df_5min.index[-1] - df_5min.index[0]).total_seconds() / 3600
+            else:
+                data_hours = 0
             
-            # 至少要有 40 根 K 線才能算 Impulse MACD（ma_len=30 需要更多資料）
-            if len(df_5min) >= 40:
-                # 使用正確的 Impulse MACD 計算
-                df_5min = calc_impulse_macd(df_5min, ma_len=30, sig_len=8)
+            # 顯示目前狀況（每次都顯示，但只在價格變動時記錄）
+            record_status = "✅ 已記錄" if should_record else "⏸️ 未變動"
+            print(f"📈 {timestamp.strftime('%H:%M:%S')} | 價格: {price:,.0f} {record_status} | "
+                  f"Tick: {len(df_tick)} | K線: {len(df_5min)}根 | "
+                  f"涵蓋: {data_hours:.1f}小時")
+            
+            # 資料量需求說明：
+            # - SMMA(30) 需要至少 60 根才穩定
+            # - DEMA(30) 需要至少 60 根才穩定  
+            # - SMA(8) 需要至少 16 根才穩定
+            # - 總計：至少需要 80 根 K 線
+            
+            if len(df_5min) < 80:
+                if not data_ready:
+                    remaining = 80 - len(df_5min)
+                    eta_minutes = remaining * 5
+                    eta_hours = eta_minutes / 60
+                    
+                    # 計算預計完成時間
+                    estimated_ready_time = datetime.now() + timedelta(minutes=eta_minutes)
+                    
+                    print(f"⏳ 資料累積中... 還需要 {remaining} 根 K 線")
+                    print(f"   預計時間：約 {eta_hours:.1f} 小時（{eta_minutes} 分鐘）")
+                    print(f"   預計完成：{estimated_ready_time.strftime('%H:%M')} 左右")
+                continue
+            
+            # 第一次達到足夠資料時顯示訊息
+            if not data_ready:
+                data_ready = True
+                print("\n" + "=" * 60)
+                print("✅ 資料量已足夠，開始監控訊號！")
+                print("=" * 60 + "\n")
+            
+            # 使用正確的 Impulse MACD 計算
+            df_5min = calc_impulse_macd(df_5min, ma_len=30, sig_len=8)
+            
+            # 檢查最新的 md 和 sb 值
+            if not pd.isna(df_5min['md'].iloc[-1]) and not pd.isna(df_5min['sb'].iloc[-1]):
+                md_val = df_5min['md'].iloc[-1]
+                sb_val = df_5min['sb'].iloc[-1]
                 
-                # 檢查最新的 md 和 sb 值
-                if not pd.isna(df_5min['md'].iloc[-1]) and not pd.isna(df_5min['sb'].iloc[-1]):
-                    md_val = df_5min['md'].iloc[-1]
-                    sb_val = df_5min['sb'].iloc[-1]
-                    print(f"📊 md={md_val:.2f}, sb={sb_val:.2f}")
+                # 計算 md 與 sb 的距離（判斷是否接近穿越）
+                distance = md_val - sb_val
                 
-                # 檢查穿越訊號
-                alert = check_impulse_signal(df_5min)
+                # 顯示指標狀態
+                if abs(distance) < 10:
+                    status = "🔥 接近穿越"
+                elif distance > 0:
+                    status = "📈 多頭區"
+                else:
+                    status = "📉 空頭區"
                 
-                # 如果出現新訊號、且超過冷卻時間，就發 Telegram 通知
-                now = datetime.now()
-                if alert and alert != last_alert and now - last_alert_time > cooldown:
-                    msg = f"⚠️ {alert}\n⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n💰 價格: {price}"
-                    send_alert(msg)
-                    last_alert = alert
-                    last_alert_time = now
-                    print(f"\n🔔 發送警報: {alert}\n")
+                print(f"📊 md={md_val:+.2f}, sb={sb_val:+.2f}, 差距={distance:+.2f} | {status}")
+            
+            # 檢查穿越訊號
+            alert = check_impulse_signal(df_5min)
+            
+            # 如果出現新訊號、且超過冷卻時間，就發 Telegram 通知
+            now = datetime.now()
+            if alert and alert != last_alert and now - last_alert_time > cooldown:
+                msg = (f"⚠️ {alert}\n"
+                       f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                       f"💰 價格: {price:,.0f}\n"
+                       f"📊 md={md_val:+.2f}, sb={sb_val:+.2f}")
+                send_alert(msg)
+                last_alert = alert
+                last_alert_time = now
+                print("\n" + "🔔" * 30)
+                print(f"🔔 發送警報: {alert}")
+                print("🔔" * 30 + "\n")
         
         # 每 3 秒更新一次行情
         time.sleep(3)
