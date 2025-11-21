@@ -145,7 +145,7 @@ def adaptive_lookback(df, base_min=5, base_max=15):
 # === 判斷是否出現「MACD 背離」 ===
 # 背離的意思：價格一直創高，但 MACD 沒跟著創高（或相反）
 # → 通常代表市場的動能「在減弱」，可能即將反轉。
-"""
+
 def check_divergence(df):
     if len(df) < 26:
         return None
@@ -185,7 +185,7 @@ def check_divergence(df):
         return "底部背離,看多警示"
     
     return None
-    """
+    
 """
 # === 判斷是否出現「MACD 背離」(改良版) ===
 def check_divergence(df, consecutive=3, threshold=1):
@@ -293,14 +293,16 @@ def check_divergence(df, consecutive=3, threshold=1):
 
     return None
 """
+
+"""
 def check_divergence(df):
-    """
+    
     偵測價格與 MACD 的 波峰 / 波谷 背離
     回傳：
         "頂部背離：看空"
         "底部背離：看多"
         None
-    """
+    
 
     src = df.tail(30)  # 固定抓最近30根K線
 
@@ -339,7 +341,7 @@ def check_divergence(df):
         return "底部背離：看多"
 
     return None
-
+"""
 
 # === 主程式 ===
 def main():
