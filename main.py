@@ -214,7 +214,8 @@ class PriceDropMonitor:
         self.notified_levels = set()
         self.alert_interval = 100  # 每跌 100 點通知
         self.min_alert_drop = 500  # 最少跌 500 點才開始通知
-        self.lookback_minutes = 60  # 追蹤最近 60 分鐘的高點
+        self.warmup_bars = 36  # 暖機期：需要 36 根 K 棒（3 小時）- 方案 A
+        self.is_warmed_up = False  # 是否已完成暖機
     
     def update(self, df_5min):
         """
@@ -227,36 +228,57 @@ class PriceDropMonitor:
         current_price = float(df_5min['close'].iloc[-1])
         current_time = df_5min.index[-1]
         
-        # 計算lookback範圍內的最高點
-        lookback_bars = self.lookback_minutes // 5  # 轉換為K棒數量
-        recent_data = df_5min.tail(lookback_bars)
-        period_high = float(recent_data['high'].max())
-        
-        # 初始化或更新高點
-        if self.recent_high is None:
-            self.recent_high = period_high
-            self.recent_high_time = current_time
+        # === 暖機階段：收集足夠資料（方案 A：3 小時）===
+        if not self.is_warmed_up:
+            if len(df_5min) < self.warmup_bars:
+                # 資料還不夠，繼續收集
+                if len(df_5min) % 6 == 0:  # 每 30 分鐘顯示一次進度
+                    remaining = self.warmup_bars - len(df_5min)
+                    remaining_minutes = remaining * 5
+                    print(f"⏳ 暖機中... {len(df_5min)}/{self.warmup_bars} 根 K 棒 | 還需 {remaining_minutes} 分鐘")
+                return None, None
+            
+            # 暖機完成，從歷史資料找真正的高點
+            warmup_data = df_5min.tail(self.warmup_bars)
+            self.recent_high = float(warmup_data['high'].max())
+            self.recent_high_time = warmup_data['high'].idxmax()
+            self.is_warmed_up = True
+            
+            print("\n" + "=" * 60)
+            print("✅ 暖機完成！開始監控價格下跌")
+            print("=" * 60)
+            print(f"📈 歷史高點: {self.recent_high:,.0f}")
+            print(f"⏰ 高點時間: {self.recent_high_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"📊 當前價格: {current_price:,.0f}")
+            print(f"📉 當前跌幅: {self.recent_high - current_price:+.0f} 點")
+            print("=" * 60 + "\n")
+            
+            # 發送暖機完成通知
+            msg = (f"✅ 監控系統暖機完成\n"
+                   f"📈 歷史高點: {self.recent_high:,.0f}\n"
+                   f"⏰ 高點時間: {self.recent_high_time.strftime('%H:%M:%S')}\n"
+                   f"📊 當前價格: {current_price:,.0f}\n"
+                   f"🎯 開始監控價格下跌")
+            send_alert(msg)
+            
             return None, None
         
-        # 如果創新高，重置通知記錄
-        if period_high > self.recent_high:
-            print(f"✅ 創新高: {self.recent_high:,.0f} → {period_high:,.0f}")
-            self.recent_high = period_high
+        # === 正常運作階段：只在創新高時更新 ===
+        if current_price > self.recent_high:
+            print(f"✅ 創新高: {self.recent_high:,.0f} → {current_price:,.0f}")
+            self.recent_high = current_price
             self.recent_high_time = current_time
             self.notified_levels.clear()
             return None, None
         
-        # 計算跌幅
+        # 計算跌幅並判斷通知
         drop = self.recent_high - current_price
         
-        # 還沒跌到最低通知門檻
         if drop < self.min_alert_drop:
             return None, None
         
-        # 計算當前級距（例如：跌 650 點 → 級距 600）
         current_level = int((drop // self.alert_interval) * self.alert_interval)
         
-        # 檢查是否需要通知
         if current_level not in self.notified_levels:
             self.notified_levels.add(current_level)
             
@@ -273,6 +295,16 @@ class PriceDropMonitor:
             return signal_type, signal_data
         
         return None, None
+    
+    def reset(self):
+        """重置監控器（用於日盤開盤時）"""
+        print("\n" + "=" * 60)
+        print("🔄 監控器重置（日盤開盤）")
+        print("=" * 60 + "\n")
+        self.recent_high = None
+        self.recent_high_time = None
+        self.notified_levels.clear()
+        self.is_warmed_up = False
 
 # 建立全域監控器
 price_monitor = PriceDropMonitor()
@@ -490,11 +522,12 @@ def optimize_parameters(stats):
 def main():
     import sys
     print("=" * 60, flush=True)
-    print("🤖 開始監控台指期價格下跌訊號（AI 自動學習版）", flush=True)
+    print("🤖 開始監控台指期價格下跌訊號（方案 A：3 小時暖機）", flush=True)
     print("=" * 60, flush=True)
-    print("📌 監控邏輯：追蹤最近 60 分鐘高點", flush=True)
+    print("📌 暖機策略：收集 3 小時資料後開始監控", flush=True)
     print("📌 通知規則：跌 500 點後開始通知，之後每跌 100 點通知一次", flush=True)
-    print(f"📌 當前參數：lookback={price_monitor.lookback_minutes} 分鐘", flush=True)
+    print(f"📌 暖機時間：{price_monitor.warmup_bars * 5} 分鐘（{price_monitor.warmup_bars} 根 K 棒）", flush=True)
+    print("📌 自動重啟：每日 08:30 日盤開盤前重置", flush=True)
     print("=" * 60 + "\n", flush=True)
     sys.stdout.flush()
     
@@ -507,14 +540,53 @@ def main():
     last_analysis_time = datetime.now()
     last_heartbeat = datetime.now()  # 心跳計時器
     loop_count = 0  # 循環計數器
+    last_reset_date = datetime.now().date()  # 記錄上次重置日期
     
     while True:
         loop_count += 1
         
+        # === 檢查是否需要日盤開盤前重置 ===
+        current_time = datetime.now()
+        current_date = current_time.date()
+        current_hour = current_time.hour
+        current_minute = current_time.minute
+        
+        # 每天 08:30 重置一次（日盤開盤前）
+        if (current_date != last_reset_date and 
+            current_hour == 8 and 
+            30 <= current_minute < 35):  # 08:30-08:35 之間執行
+            
+            print("\n" + "=" * 70)
+            print("🌅 日盤開盤前自動重置")
+            print("=" * 70)
+            print(f"⏰ 重置時間: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print("🔄 清空歷史資料，重新開始監控")
+            print("=" * 70 + "\n")
+            
+            # 重置監控器
+            price_monitor.reset()
+            
+            # 清空 tick 資料
+            df_tick = pd.DataFrame(columns=['Close'])
+            last_alert = None
+            last_alert_time = datetime.min
+            data_ready = False
+            last_reset_date = current_date
+            
+            # 發送重置通知
+            msg = (f"🌅 日盤開盤前自動重置\n"
+                   f"⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                   f"🔄 清空歷史資料\n"
+                   f"⏳ 開始 3 小時暖機期")
+            send_alert(msg)
+            
+            print("✅ 重置完成，繼續監控...\n")
+        
         # 每 60 秒顯示一次心跳訊息（無論是否有價格）
         if (datetime.now() - last_heartbeat).total_seconds() >= 60:
             import sys
-            print(f"💓 心跳 #{loop_count} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 監控運行中...", flush=True)
+            warmup_status = "暖機中" if not price_monitor.is_warmed_up else "監控中"
+            print(f"💓 心跳 #{loop_count} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {warmup_status}...", flush=True)
             sys.stdout.flush()
             last_heartbeat = datetime.now()
         
@@ -551,17 +623,18 @@ def main():
             df_5min['volume'] = df_tick['Close'].resample('5min').count()
             df_5min.dropna(inplace=True)
             
-            if len(df_5min) < 60:
+            # 至少需要 2 根 K 棒才能開始處理
+            if len(df_5min) < 2:
                 continue
             
-            if not data_ready:
+            if not data_ready and len(df_5min) >= 2:
                 data_ready = True
                 print("\n" + "=" * 60)
-                print("✅ 資料量已足夠，開始監控！")
+                print("✅ 開始收集資料")
                 print("=" * 60)
                 print(f"📊 當前有 {len(df_5min)} 根 5 分鐘 K 棒")
                 print(f"📈 最新價格: {price:,.0f}")
-                print(f"⚙️ 監控參數: slope={params.slope_threshold}, lookback={params.lookback}")
+                print(f"⏳ 暖機需要: {price_monitor.warmup_bars} 根 K 棒（{price_monitor.warmup_bars * 5} 分鐘）")
                 print("=" * 60 + "\n")
             
             df_5min = calc_macd(df_5min)
@@ -582,14 +655,21 @@ def main():
             
             # 每 3 分鐘顯示一次詳細狀態
             if data_ready and loop_count % 60 == 0:  # 每 60 個循環（約 3 分鐘）
-                recent_high = price_monitor.recent_high if price_monitor.recent_high else price
-                drop = recent_high - price
-                print(f"📊 {datetime.now().strftime('%H:%M:%S')} | "
-                      f"價格: {price:,.0f} | "
-                      f"高點: {recent_high:,.0f} | "
-                      f"跌幅: {drop:+.0f} | "
-                      f"K棒: {len(df_5min)} | "
-                      f"循環: #{loop_count}")
+                if price_monitor.is_warmed_up:
+                    recent_high = price_monitor.recent_high
+                    drop = recent_high - price
+                    print(f"📊 {datetime.now().strftime('%H:%M:%S')} | "
+                          f"價格: {price:,.0f} | "
+                          f"高點: {recent_high:,.0f} | "
+                          f"跌幅: {drop:+.0f} | "
+                          f"K棒: {len(df_5min)} | "
+                          f"循環: #{loop_count}")
+                else:
+                    remaining = price_monitor.warmup_bars - len(df_5min)
+                    print(f"⏳ {datetime.now().strftime('%H:%M:%S')} | "
+                          f"暖機中: {len(df_5min)}/{price_monitor.warmup_bars} | "
+                          f"還需 {remaining * 5} 分鐘 | "
+                          f"循環: #{loop_count}")
             
             now = datetime.now()
             cooldown = timedelta(minutes=params.cooldown_minutes)
