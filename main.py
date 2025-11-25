@@ -153,14 +153,21 @@ def get_payload():
     }
 
 def keep_alive(url):
-    """自我保持運作"""
+    """自我保持運作（每 5 分鐘 ping 一次）"""
     while True:
         try:
-            requests.get(url)
-            print("Pinged self to stay awake")
-        except:
-            pass
-        time.sleep(600)
+            response = requests.get(url, timeout=10)
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            if response.status_code == 200:
+                print(f"✅ [{current_time}] Keep-alive 成功 (Status: {response.status_code})")
+            else:
+                print(f"⚠️ [{current_time}] Keep-alive 異常 (Status: {response.status_code})")
+        except Exception as e:
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            print(f"❌ [{current_time}] Keep-alive 失敗: {e}")
+        
+        # 每 5 分鐘 ping 一次（Render 免費方案 15 分鐘沒請求會休眠）
+        time.sleep(300)
 
 def send_alert(msg):
     """發送通知給 Telegram"""
@@ -541,6 +548,7 @@ def main():
     last_heartbeat = datetime.now()  # 心跳計時器
     loop_count = 0  # 循環計數器
     last_reset_date = datetime.now().date()  # 記錄上次重置日期
+    last_keepalive_check = datetime.now()  # Keep-alive 檢查計時器
     
     while True:
         loop_count += 1
@@ -590,9 +598,17 @@ def main():
             sys.stdout.flush()
             last_heartbeat = datetime.now()
         
+        # 每 4 分鐘檢查一次 Keep-alive 執行緒是否正常（備用機制）
+        if (datetime.now() - last_keepalive_check).total_seconds() >= 240:
+            # 檢查 Keep-alive 執行緒是否還活著
+            keepalive_alive = any(t.name == "KeepAliveThread" and t.is_alive() for t in threading.enumerate())
+            if not keepalive_alive:
+                print("⚠️ Keep-alive 執行緒已停止，嘗試重啟...", flush=True)
+            last_keepalive_check = datetime.now()
+        
         timestamp, price, current_ref = fetch_latest_price()
         
-        # 如果沒有價格，顯示警告（前 5 次）
+        0# 如果沒有價格，顯示警告（前 5 次）
         if not price and loop_count <= 5:
             import sys
             print(f"⚠️ [{loop_count}] 無法取得價格 | {datetime.now().strftime('%H:%M:%S')} | 可能是休市時間", flush=True)
@@ -844,10 +860,18 @@ if __name__ == "__main__":
         import time
         import sys
         time.sleep(10)
-        print("🔄 Keep-alive 功能啟動（每 10 分鐘自動喚醒）", flush=True)
+        
+        # 自動偵測 Render URL（從環境變數）
+        render_url = os.getenv('RENDER_EXTERNAL_URL')
+        if not render_url:
+            # 如果沒有環境變數，使用預設 URL
+            render_url = "https://danny-macd.onrender.com"
+        
+        print(f"🔄 Keep-alive 功能啟動（每 5 分鐘自動喚醒）", flush=True)
+        print(f"🌐 目標 URL: {render_url}", flush=True)
         sys.stdout.flush()
         try:
-            keep_alive("https://danny-macd.onrender.com")
+            keep_alive(render_url)
         except Exception as e:
             print(f"❌ Keep-alive 錯誤: {e}", flush=True)
     
