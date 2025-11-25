@@ -2,11 +2,11 @@ services:
   - type: web
     name: danny-macd
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python main.py
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.11
       - key: DATABASE_URL
         sync: false
     healthCheckPath: /health
