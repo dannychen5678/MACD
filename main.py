@@ -11,6 +11,10 @@ from pathlib import Path
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+import pytz
+
+# 設定台灣時區
+TW_TZ = pytz.timezone('Asia/Taipei')
 
 # === Telegram 設定 ===
 BOT_TOKEN = "8262097219:AAGEtNSYY81GrtupVILIxqTA2rnt7Z0woUo"
@@ -130,9 +134,13 @@ class DynamicParams:
 
 params = DynamicParams()
 
+def get_taiwan_time():
+    """取得台灣時間"""
+    return datetime.now(TW_TZ)
+
 def get_market_type():
     """切換交易時段"""
-    now = datetime.now().time()
+    now = get_taiwan_time().time()
     if datetime.strptime("08:45", "%H:%M").time() <= now <= datetime.strptime("13:45", "%H:%M").time():
         return "0"
     if now >= datetime.strptime("15:00", "%H:%M").time() or now <= datetime.strptime("05:00", "%H:%M").time():
@@ -187,15 +195,38 @@ def fetch_latest_price():
         if not quotes:
             return None, None, None
 
-        txf_list = [q for q in quotes if q["SymbolID"].startswith("TXF") and q["CLastPrice"]]
+        # 優先選擇近月合約（通常是 TXFL5-M 或類似格式）
+        # 過濾條件：
+        # 1. SymbolID 包含 "TXF" 但不是 "TXF-P"（現貨）
+        # 2. 有成交價 CLastPrice
+        # 3. 有成交量 CTotalVolume
+        txf_list = [
+            q for q in quotes 
+            if "TXF" in q["SymbolID"] 
+            and q["SymbolID"] != "TXF-P"  # 排除現貨
+            and q.get("CLastPrice") 
+            and q.get("CLastPrice") != ""
+            and q.get("CTotalVolume")
+            and q.get("CTotalVolume") != ""
+        ]
         
         if not txf_list:
             return None, None, None
 
-        q = txf_list[0]
+        # 選擇成交量最大的合約（通常是近月）
+        q = max(txf_list, key=lambda x: int(x.get("CTotalVolume", "0") or "0"))
+        
         price = float(q["CLastPrice"])
         ref_price = float(q["CRefPrice"]) if q["CRefPrice"] else price
-        timestamp = datetime.now()
+        timestamp = get_taiwan_time()  # 使用台灣時間
+        
+        # 顯示選擇的合約（前 3 次）
+        global fetch_count
+        if 'fetch_count' not in globals():
+            fetch_count = 0
+        fetch_count += 1
+        if fetch_count <= 3:
+            print(f"📊 選擇合約: {q['SymbolID']} | 價格: {price:,.0f} | 成交量: {q['CTotalVolume']}")
         
         return timestamp, price, ref_price
 
@@ -539,76 +570,84 @@ def main():
     sys.stdout.flush()
     
     df_tick = pd.DataFrame(columns=['Close'])
+    df_tick.index = pd.DatetimeIndex([])  # 初始化為空的 DatetimeIndex
     last_alert = None
     last_alert_time = datetime.min
     last_price = None
     last_record_time = None
     data_ready = False
-    last_analysis_time = datetime.now()
-    last_heartbeat = datetime.now()  # 心跳計時器
+    last_analysis_time = get_taiwan_time()
+    last_heartbeat = get_taiwan_time()  # 心跳計時器
     loop_count = 0  # 循環計數器
-    last_reset_date = datetime.now().date()  # 記錄上次重置日期
-    last_keepalive_check = datetime.now()  # Keep-alive 檢查計時器
+    last_reset_date = get_taiwan_time().date()  # 記錄上次重置日期
+    last_keepalive_check = get_taiwan_time()  # Keep-alive 檢查計時器
     
     while True:
         loop_count += 1
         
         # === 檢查是否需要日盤開盤前重置 ===
-        current_time = datetime.now()
+        current_time = get_taiwan_time()  # 使用台灣時間
         current_date = current_time.date()
         current_hour = current_time.hour
         current_minute = current_time.minute
         
-        # 每天 08:30 重置一次（日盤開盤前）
-        if (current_date != last_reset_date and 
+        # === 不再自動重啟，讓程式連續運行 ===
+        # 原因：夜盤和日盤是連續的，不應該清空夜盤的高點
+        # 如果需要重啟，請手動重啟服務
+        
+        # 每週一 08:30 重置一次（週末後重新開始）
+        if (current_date.weekday() == 0 and  # 週一
+            current_date != last_reset_date and 
             current_hour == 8 and 
             30 <= current_minute < 35):  # 08:30-08:35 之間執行
             
             print("\n" + "=" * 70)
-            print("🌅 日盤開盤前自動重置")
+            print("🌅 週一開盤前自動重置（週末後重新開始）")
             print("=" * 70)
             print(f"⏰ 重置時間: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            print("🔄 清空歷史資料，重新開始監控")
+            print("🔄 清空週末資料，重新開始監控")
             print("=" * 70 + "\n")
             
             # 重置監控器
             price_monitor.reset()
             
-            # 清空 tick 資料
+            # 清空 tick 資料（保持 DatetimeIndex）
             df_tick = pd.DataFrame(columns=['Close'])
+            df_tick.index = pd.DatetimeIndex([])  # 設定為空的 DatetimeIndex
             last_alert = None
             last_alert_time = datetime.min
             data_ready = False
             last_reset_date = current_date
             
             # 發送重置通知
-            msg = (f"🌅 日盤開盤前自動重置\n"
+            msg = (f"🌅 週一開盤前自動重置\n"
                    f"⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                   f"🔄 清空歷史資料\n"
+                   f"🔄 清空週末資料\n"
                    f"⏳ 開始 3 小時暖機期")
             send_alert(msg)
             
             print("✅ 重置完成，繼續監控...\n")
         
         # 每 60 秒顯示一次心跳訊息（無論是否有價格）
-        if (datetime.now() - last_heartbeat).total_seconds() >= 60:
+        now_tw = get_taiwan_time()
+        if (now_tw - last_heartbeat).total_seconds() >= 60:
             import sys
             warmup_status = "暖機中" if not price_monitor.is_warmed_up else "監控中"
-            print(f"💓 心跳 #{loop_count} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {warmup_status}...", flush=True)
+            print(f"💓 心跳 #{loop_count} | {now_tw.strftime('%Y-%m-%d %H:%M:%S')} (台灣) | {warmup_status}...", flush=True)
             sys.stdout.flush()
-            last_heartbeat = datetime.now()
+            last_heartbeat = now_tw
         
         # 每 4 分鐘檢查一次 Keep-alive 執行緒是否正常（備用機制）
-        if (datetime.now() - last_keepalive_check).total_seconds() >= 240:
+        if (now_tw - last_keepalive_check).total_seconds() >= 240:
             # 檢查 Keep-alive 執行緒是否還活著
             keepalive_alive = any(t.name == "KeepAliveThread" and t.is_alive() for t in threading.enumerate())
             if not keepalive_alive:
                 print("⚠️ Keep-alive 執行緒已停止，嘗試重啟...", flush=True)
-            last_keepalive_check = datetime.now()
+            last_keepalive_check = now_tw
         
         timestamp, price, current_ref = fetch_latest_price()
         
-        0# 如果沒有價格，顯示警告（前 5 次）
+        # 如果沒有價格，顯示警告（前 5 次）
         if not price and loop_count <= 5:
             import sys
             print(f"⚠️ [{loop_count}] 無法取得價格 | {datetime.now().strftime('%H:%M:%S')} | 可能是休市時間", flush=True)
@@ -628,9 +667,16 @@ def main():
                 should_record = True
             
             if should_record:
-                df_tick.index = pd.to_datetime(df_tick.index, errors='coerce')
-                cutoff_time = datetime.now() - timedelta(hours=48)
-                df_tick = df_tick.loc[df_tick.index >= cutoff_time]
+                # 確保索引是 DatetimeIndex
+                if not isinstance(df_tick.index, pd.DatetimeIndex):
+                    df_tick.index = pd.DatetimeIndex([])
+                
+                # 清理超過 48 小時的舊資料
+                cutoff_time = get_taiwan_time() - timedelta(hours=48)
+                if len(df_tick) > 0:
+                    df_tick = df_tick.loc[df_tick.index >= cutoff_time]
+                
+                # 記錄新價格
                 df_tick.loc[timestamp] = price
                 last_price = price
                 last_record_time = timestamp
@@ -659,12 +705,12 @@ def main():
             update_signal_results(df_5min)
             
             # 每 30 分鐘分析一次並優化參數
-            if (datetime.now() - last_analysis_time).total_seconds() >= 1800:
+            if (get_taiwan_time() - last_analysis_time).total_seconds() >= 1800:
                 stats = analyze_signals()
                 if stats:
                     print_statistics(stats)
                     optimize_parameters(stats)
-                last_analysis_time = datetime.now()
+                last_analysis_time = get_taiwan_time()
             
             # 檢查價格下跌訊號
             alert, signal_data = check_divergence(df_5min)
@@ -682,12 +728,12 @@ def main():
                           f"循環: #{loop_count}")
                 else:
                     remaining = price_monitor.warmup_bars - len(df_5min)
-                    print(f"⏳ {datetime.now().strftime('%H:%M:%S')} | "
+                    print(f"⏳ {get_taiwan_time().strftime('%H:%M:%S')} | "
                           f"暖機中: {len(df_5min)}/{price_monitor.warmup_bars} | "
                           f"還需 {remaining * 5} 分鐘 | "
                           f"循環: #{loop_count}")
             
-            now = datetime.now()
+            now = get_taiwan_time()
             cooldown = timedelta(minutes=params.cooldown_minutes)
             
             if alert and alert != last_alert and now - last_alert_time > cooldown:
