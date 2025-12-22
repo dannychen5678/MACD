@@ -572,7 +572,7 @@ def main():
     df_tick = pd.DataFrame(columns=['Close'])
     df_tick.index = pd.DatetimeIndex([])  # 初始化為空的 DatetimeIndex
     last_alert = None
-    last_alert_time = datetime.min
+    last_alert_time = datetime.min.replace(tzinfo=TW_TZ)
     last_price = None
     last_record_time = None
     data_ready = False
@@ -615,7 +615,7 @@ def main():
             df_tick = pd.DataFrame(columns=['Close'])
             df_tick.index = pd.DatetimeIndex([])  # 設定為空的 DatetimeIndex
             last_alert = None
-            last_alert_time = datetime.min
+            last_alert_time = get_taiwan_time() - timedelta(days=3650)
             data_ready = False
             last_reset_date = current_date
             
