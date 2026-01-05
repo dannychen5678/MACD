@@ -73,6 +73,78 @@ DATA_DIR = Path("macd_data")
 DATA_DIR.mkdir(exist_ok=True)
 PARAMS_FILE = DATA_DIR / "parameters.json"
 
+class PriceRiseMonitor:
+    def __init__(self):
+        self.recent_low = None
+        self.recent_low_time = None
+        self.notified_levels = set()
+        self.alert_interval = 100   # 每漲 100 點
+        self.min_alert_rise = 500   # 漲 500 才開始
+        self.warmup_bars = 36
+        self.is_warmed_up = False
+
+    def update(self, df_5min):
+        if len(df_5min) < 2:
+            return None, None
+
+        current_price = float(df_5min['close'].iloc[-1])
+        current_time = df_5min.index[-1]
+
+        # === 暖機 ===
+        if not self.is_warmed_up:
+            if len(df_5min) < self.warmup_bars:
+                return None, None
+
+            warmup_data = df_5min.tail(self.warmup_bars)
+            self.recent_low = float(warmup_data['low'].min())
+            self.recent_low_time = warmup_data['low'].idxmin()
+            self.is_warmed_up = True
+
+            send_alert(
+                f"✅ 上漲監控暖機完成\n"
+                f"📉 歷史低點: {self.recent_low:,.0f}\n"
+                f"🎯 開始監控價格上漲"
+            )
+            return None, None
+
+        # === 創新低才更新 ===
+        if current_price < self.recent_low:
+            self.recent_low = current_price
+            self.recent_low_time = current_time
+            self.notified_levels.clear()
+            return None, None
+
+        # === 計算漲幅 ===
+        rise = current_price - self.recent_low
+        if rise < self.min_alert_rise:
+            return None, None
+
+        current_level = int((rise // self.alert_interval) * self.alert_interval)
+
+        if current_level not in self.notified_levels:
+            self.notified_levels.add(current_level)
+
+            signal_data = {
+                'recent_low': self.recent_low,
+                'current_price': current_price,
+                'rise': rise,
+                'rise_level': current_level,
+                'low_time': self.recent_low_time
+            }
+
+            signal_type = f"價格上漲 {current_level} 點"
+            return signal_type, signal_data
+
+        return None, None
+    
+    def reset(self):
+        """重置監控器"""
+        print("🔄 上漲監控器重置")
+        self.recent_low = None
+        self.recent_low_time = None
+        self.notified_levels.clear()
+        self.is_warmed_up = False
+
 # === 動態參數（會自動調整） ===
 class DynamicParams:
     def __init__(self):
@@ -346,6 +418,7 @@ class PriceDropMonitor:
 
 # 建立全域監控器
 price_monitor = PriceDropMonitor()
+price_rise_monitor = PriceRiseMonitor()
 
 def check_divergence(df):
     """
@@ -359,14 +432,32 @@ def record_signal(signal_type, price, signal_data, df_5min):
     """記錄訊號到資料庫"""
     try:
         session = Session()
+        
+        # 根據訊號類型調整資料欄位
+        if '下跌' in signal_type:
+            slope = float(signal_data.get('drop', 0))
+            hist_avg = float(signal_data.get('recent_high', price))
+            hist_now = float(signal_data.get('current_price', price))
+            price_range = float(signal_data.get('drop', 0))
+        elif '上漲' in signal_type:
+            slope = float(signal_data.get('rise', 0))
+            hist_avg = float(signal_data.get('recent_low', price))
+            hist_now = float(signal_data.get('current_price', price))
+            price_range = float(signal_data.get('rise', 0))
+        else:
+            slope = 0
+            hist_avg = price
+            hist_now = price
+            price_range = 0
+        
         signal = SignalLog(
             timestamp=datetime.now(),
             signal_type=signal_type,
             entry_price=price,
-            slope=float(signal_data.get('drop', 0)),  # 用跌幅代替斜率
-            hist_avg=float(signal_data.get('recent_high', price)),  # 用高點代替 hist_avg
-            hist_now=float(signal_data.get('current_price', price)),  # 用現價代替 hist_now
-            price_range=float(signal_data.get('drop', 0)),  # 用跌幅代替 price_range
+            slope=slope,
+            hist_avg=hist_avg,
+            hist_now=hist_now,
+            price_range=price_range,
             slope_threshold=params.slope_threshold,
             lookback=params.lookback
         )
@@ -610,6 +701,7 @@ def main():
             
             # 重置監控器
             price_monitor.reset()
+            price_rise_monitor.reset()
             
             # 清空 tick 資料（保持 DatetimeIndex）
             df_tick = pd.DataFrame(columns=['Close'])
@@ -713,7 +805,19 @@ def main():
                 last_analysis_time = get_taiwan_time()
             
             # 檢查價格下跌訊號
-            alert, signal_data = check_divergence(df_5min)
+            drop_alert, drop_data = price_monitor.update(df_5min)
+            rise_alert, rise_data = price_rise_monitor.update(df_5min)
+
+            # 決定要發送哪個訊號
+            alert = None
+            signal_data = None
+
+            if drop_alert:
+                alert = drop_alert
+                signal_data = drop_data
+            elif rise_alert:
+                alert = rise_alert
+                signal_data = rise_data
             
             # 每 3 分鐘顯示一次詳細狀態
             if data_ready and loop_count % 60 == 0:  # 每 60 個循環（約 3 分鐘）
@@ -735,19 +839,34 @@ def main():
             
             now = get_taiwan_time()
             cooldown = timedelta(minutes=params.cooldown_minutes)
-            
+
             if alert and alert != last_alert and now - last_alert_time > cooldown:
                 # 記錄訊號
                 record_signal(alert, price, signal_data, df_5min)
                 
-                # 發送通知
-                high_time_str = signal_data['high_time'].strftime('%H:%M:%S')
-                msg = (f"⚠️ {alert}\n"
-                       f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                       f"📈 高點: {signal_data['recent_high']:,.0f} ({high_time_str})\n"
-                       f"📉 現價: {signal_data['current_price']:,.0f}\n"
-                       f"💥 跌幅: {signal_data['drop']:.0f} 點\n"
-                       f"🎯 級距: {signal_data['drop_level']} 點")
+                # 發送通知（根據訊號類型調整格式）
+                if '下跌' in alert:
+                    # 下跌通知
+                    high_time_str = signal_data['high_time'].strftime('%H:%M:%S')
+                    msg = (f"⚠️ {alert}\n"
+                           f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                           f"📈 高點: {signal_data['recent_high']:,.0f} ({high_time_str})\n"
+                           f"📉 現價: {signal_data['current_price']:,.0f}\n"
+                           f"💥 跌幅: {signal_data['drop']:.0f} 點\n"
+                           f"🎯 級距: {signal_data['drop_level']} 點")
+                elif '上漲' in alert:
+                    # 上漲通知
+                    low_time_str = signal_data['low_time'].strftime('%H:%M:%S')
+                    msg = (f"🚀 {alert}\n"
+                           f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                           f"📉 低點: {signal_data['recent_low']:,.0f} ({low_time_str})\n"
+                           f"📈 現價: {signal_data['current_price']:,.0f}\n"
+                           f"💥 漲幅: {signal_data['rise']:.0f} 點\n"
+                           f"🎯 級距: {signal_data['rise_level']} 點")
+                else:
+                    # 預設格式
+                    msg = f"⚠️ {alert}\n⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n💰 價格: {price:,.0f}"
+                
                 send_alert(msg)
                 
                 last_alert = alert
