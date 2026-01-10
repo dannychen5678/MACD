@@ -80,8 +80,9 @@ class PriceRiseMonitor:
         self.notified_levels = set()
         self.alert_interval = 100   # 每漲 100 點
         self.min_alert_rise = 500   # 漲 500 才開始
-        self.warmup_bars = 36
+        self.warmup_bars = 12       # 縮短為 1 小時（12根5分K）
         self.is_warmed_up = False
+        self.session_start_price = None  # 記錄盤中起始價格
 
     def update(self, df_5min):
         if len(df_5min) < 2:
@@ -89,12 +90,36 @@ class PriceRiseMonitor:
 
         current_price = float(df_5min['close'].iloc[-1])
         current_time = df_5min.index[-1]
+        
+        # 檢查是否為開盤時間（日盤 08:45 或夜盤 15:00）
+        current_hour = get_taiwan_time().hour
+        current_minute = get_taiwan_time().minute
+        
+        is_day_open = (current_hour == 8 and 45 <= current_minute <= 50)
+        is_night_open = (current_hour == 15 and 0 <= current_minute <= 5)
+        
+        # 開盤時重置基準點為當前價格
+        if (is_day_open or is_night_open) and self.session_start_price is None:
+            self.session_start_price = current_price
+            self.recent_low = current_price
+            self.recent_low_time = current_time
+            self.notified_levels.clear()
+            self.is_warmed_up = True
+            
+            session_type = "日盤" if is_day_open else "夜盤"
+            send_alert(
+                f"✅ {session_type}開盤，上漲監控重置\n"
+                f"📊 起始價格: {current_price:,.0f}\n"
+                f"🎯 開始監控價格上漲"
+            )
+            return None, None
 
-        # === 暖機 ===
+        # === 暖機（縮短為1小時）===
         if not self.is_warmed_up:
             if len(df_5min) < self.warmup_bars:
                 return None, None
 
+            # 使用較短期間的資料，避免跨時段問題
             warmup_data = df_5min.tail(self.warmup_bars)
             self.recent_low = float(warmup_data['low'].min())
             self.recent_low_time = warmup_data['low'].idxmin()
@@ -102,7 +127,7 @@ class PriceRiseMonitor:
 
             send_alert(
                 f"✅ 上漲監控暖機完成\n"
-                f"📉 歷史低點: {self.recent_low:,.0f}\n"
+                f"📉 近期低點: {self.recent_low:,.0f}\n"
                 f"🎯 開始監控價格上漲"
             )
             return None, None
@@ -144,6 +169,7 @@ class PriceRiseMonitor:
         self.recent_low_time = None
         self.notified_levels.clear()
         self.is_warmed_up = False
+        self.session_start_price = None  # 重置盤中起始價格
 
 # === 動態參數（會自動調整） ===
 class DynamicParams:
