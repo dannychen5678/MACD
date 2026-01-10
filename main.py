@@ -9,8 +9,7 @@ from flask import Flask
 import threading
 from pathlib import Path
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 import pytz
 
 # 設定台灣時區
@@ -204,7 +203,7 @@ class DynamicParams:
                 lookback=self.lookback,
                 hist_confirm_bars=self.hist_confirm_bars,
                 cooldown_minutes=self.cooldown_minutes,
-                last_update=datetime.now()
+                last_update=get_taiwan_time()
             )
             session.add(param)
             session.commit()
@@ -218,7 +217,7 @@ class DynamicParams:
                 'lookback': self.lookback,
                 'hist_confirm_bars': self.hist_confirm_bars,
                 'cooldown_minutes': self.cooldown_minutes,
-                'last_update': datetime.now().isoformat()
+                'last_update': get_taiwan_time().isoformat()
             }
             with open(PARAMS_FILE, 'w') as f:
                 json.dump(params, f, indent=2)
@@ -256,13 +255,13 @@ def keep_alive(url):
     while True:
         try:
             response = requests.get(url, timeout=10)
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            current_time = get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')
             if response.status_code == 200:
                 print(f"✅ [{current_time}] Keep-alive 成功 (Status: {response.status_code})")
             else:
                 print(f"⚠️ [{current_time}] Keep-alive 異常 (Status: {response.status_code})")
         except Exception as e:
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            current_time = get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')
             print(f"❌ [{current_time}] Keep-alive 失敗: {e}")
         
         # 每 5 分鐘 ping 一次（Render 免費方案 15 分鐘沒請求會休眠）
@@ -362,7 +361,7 @@ def record_signal(signal_type, price, signal_data, df_5min):
             price_range = 0
         
         signal = SignalLog(
-            timestamp=datetime.now(),
+            timestamp=get_taiwan_time(),
             signal_type=signal_type,
             entry_price=price,
             slope=slope,
@@ -384,7 +383,7 @@ def update_signal_results(df_5min):
     """更新訊號結果（追蹤價格變化）"""
     try:
         session = Session()
-        current_time = datetime.now()
+        current_time = get_taiwan_time()
         current_price = float(df_5min['close'].iloc[-1])
         
         # 查詢所有未完成的訊號
@@ -648,7 +647,7 @@ def main():
         # 如果沒有價格，顯示警告（前 5 次）
         if not price and loop_count <= 5:
             import sys
-            print(f"⚠️ [{loop_count}] 無法取得價格 | {datetime.now().strftime('%H:%M:%S')} | 可能是休市時間", flush=True)
+            print(f"⚠️ [{loop_count}] 無法取得價格 | {get_taiwan_time().strftime('%H:%M:%S')} | 可能是休市時間", flush=True)
             sys.stdout.flush()
         
         if price:
@@ -719,7 +718,7 @@ def main():
                     open_price = session_monitor.session_open_price
                     change = price - open_price
                     session_type = session_monitor.session_type
-                    print(f"📊 {datetime.now().strftime('%H:%M:%S')} | "
+                    print(f"📊 {get_taiwan_time().strftime('%H:%M:%S')} | "
                           f"{session_type} | "
                           f"開盤價: {open_price:,.0f} | "
                           f"現價: {price:,.0f} | "
@@ -777,12 +776,12 @@ def home():
 @app.route("/health")
 def health():
     """健康檢查端點 - 快速回應"""
-    return {"status": "ok", "service": "session-monitor", "timestamp": datetime.now().isoformat()}, 200
+    return {"status": "ok", "service": "session-monitor", "timestamp": get_taiwan_time().isoformat()}, 200
 
 @app.route("/heartbeat")
 def heartbeat():
     """心跳檢查 - 確認服務持續運行"""
-    current_time = datetime.now()
+    current_time = get_taiwan_time()  # 使用台灣時間
     return f"""
     <html>
     <head>
@@ -871,11 +870,11 @@ def run_bot():
 
 if __name__ == "__main__":
     import sys
-    current_time = datetime.now()
+    current_time = get_taiwan_time()  # 使用台灣時間
     print("\n" + "=" * 70, flush=True)
     print("🚀 台指期開盤價基準監控系統啟動中...", flush=True)
     print("=" * 70, flush=True)
-    print(f"⏰ 啟動時間: {current_time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    print(f"⏰ 啟動時間: {current_time.strftime('%Y-%m-%d %H:%M:%S')} (台灣時間)", flush=True)
     print(f"📅 星期: {['一', '二', '三', '四', '五', '六', '日'][current_time.weekday()]}", flush=True)
     
     # 判斷交易時段
