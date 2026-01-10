@@ -73,16 +73,20 @@ DATA_DIR = Path("macd_data")
 DATA_DIR.mkdir(exist_ok=True)
 PARAMS_FILE = DATA_DIR / "parameters.json"
 
-class PriceRiseMonitor:
+class SessionMonitor:
+    """
+    交易時段監控器 - 以開盤價為基準點計算漲跌幅
+    日盤：08:45 開盤，以開盤價為基準
+    夜盤：15:00 開盤，以開盤價為基準
+    """
     def __init__(self):
-        self.recent_low = None
-        self.recent_low_time = None
+        self.session_open_price = None  # 開盤價（基準點）
+        self.session_open_time = None
+        self.session_type = None  # "日盤" 或 "夜盤"
         self.notified_levels = set()
-        self.alert_interval = 100   # 每漲 100 點
-        self.min_alert_rise = 500   # 漲 500 才開始
-        self.warmup_bars = 12       # 縮短為 1 小時（12根5分K）
-        self.is_warmed_up = False
-        self.session_start_price = None  # 記錄盤中起始價格
+        self.alert_interval = 100   # 每漲/跌 100 點通知
+        self.min_alert_change = 500   # 漲/跌 500 點才開始通知
+        self.is_session_started = False
 
     def update(self, df_5min):
         if len(df_5min) < 2:
@@ -91,85 +95,74 @@ class PriceRiseMonitor:
         current_price = float(df_5min['close'].iloc[-1])
         current_time = df_5min.index[-1]
         
-        # 檢查是否為開盤時間（日盤 08:45 或夜盤 15:00）
+        # 檢查是否為開盤時間
         current_hour = get_taiwan_time().hour
         current_minute = get_taiwan_time().minute
         
         is_day_open = (current_hour == 8 and 45 <= current_minute <= 50)
         is_night_open = (current_hour == 15 and 0 <= current_minute <= 5)
         
-        # 開盤時重置基準點為當前價格
-        if (is_day_open or is_night_open) and self.session_start_price is None:
-            self.session_start_price = current_price
-            self.recent_low = current_price
-            self.recent_low_time = current_time
+        # 開盤時設定基準點為開盤價
+        if (is_day_open or is_night_open) and not self.is_session_started:
+            self.session_open_price = current_price
+            self.session_open_time = current_time
+            self.session_type = "日盤" if is_day_open else "夜盤"
             self.notified_levels.clear()
-            self.is_warmed_up = True
+            self.is_session_started = True
             
-            session_type = "日盤" if is_day_open else "夜盤"
             send_alert(
-                f"✅ {session_type}開盤，上漲監控重置\n"
-                f"📊 起始價格: {current_price:,.0f}\n"
-                f"🎯 開始監控價格上漲"
+                f"✅ {self.session_type}開盤\n"
+                f"📊 開盤價: {current_price:,.0f}\n"
+                f"🎯 開始監控從開盤價算起的漲跌幅"
             )
             return None, None
 
-        # === 暖機（縮短為1小時）===
-        if not self.is_warmed_up:
-            if len(df_5min) < self.warmup_bars:
-                return None, None
-
-            # 使用較短期間的資料，避免跨時段問題
-            warmup_data = df_5min.tail(self.warmup_bars)
-            self.recent_low = float(warmup_data['low'].min())
-            self.recent_low_time = warmup_data['low'].idxmin()
-            self.is_warmed_up = True
-
-            send_alert(
-                f"✅ 上漲監控暖機完成\n"
-                f"📉 近期低點: {self.recent_low:,.0f}\n"
-                f"🎯 開始監控價格上漲"
-            )
+        # 如果還沒開始交易時段，不進行監控
+        if not self.is_session_started or self.session_open_price is None:
             return None, None
 
-        # === 創新低才更新 ===
-        if current_price < self.recent_low:
-            self.recent_low = current_price
-            self.recent_low_time = current_time
-            self.notified_levels.clear()
+        # 計算從開盤價開始的變化
+        change = current_price - self.session_open_price
+        
+        # 判斷是上漲還是下跌
+        if abs(change) < self.min_alert_change:
             return None, None
+        
+        # 計算級距
+        current_level = int((abs(change) // self.alert_interval) * self.alert_interval)
+        
+        # 建立通知標識（區分上漲和下跌）
+        if change > 0:
+            level_key = f"up_{current_level}"
+            signal_type = f"從開盤價上漲 {current_level} 點"
+        else:
+            level_key = f"down_{current_level}"
+            signal_type = f"從開盤價下跌 {current_level} 點"
 
-        # === 計算漲幅 ===
-        rise = current_price - self.recent_low
-        if rise < self.min_alert_rise:
-            return None, None
-
-        current_level = int((rise // self.alert_interval) * self.alert_interval)
-
-        if current_level not in self.notified_levels:
-            self.notified_levels.add(current_level)
+        if level_key not in self.notified_levels:
+            self.notified_levels.add(level_key)
 
             signal_data = {
-                'recent_low': self.recent_low,
+                'session_open_price': self.session_open_price,
                 'current_price': current_price,
-                'rise': rise,
-                'rise_level': current_level,
-                'low_time': self.recent_low_time
+                'change': change,
+                'change_level': current_level,
+                'open_time': self.session_open_time,
+                'session_type': self.session_type
             }
 
-            signal_type = f"價格上漲 {current_level} 點"
             return signal_type, signal_data
 
         return None, None
     
     def reset(self):
         """重置監控器"""
-        print("🔄 上漲監控器重置")
-        self.recent_low = None
-        self.recent_low_time = None
+        print("🔄 交易時段監控器重置")
+        self.session_open_price = None
+        self.session_open_time = None
+        self.session_type = None
         self.notified_levels.clear()
-        self.is_warmed_up = False
-        self.session_start_price = None  # 重置盤中起始價格
+        self.is_session_started = False
 
 # === 動態參數（會自動調整） ===
 class DynamicParams:
@@ -342,141 +335,8 @@ def calc_macd(df):
     df['Histogram'] = df['MACD'] - df['Signal']
     return df
 
-# === 價格下跌監控器 ===
-class PriceDropMonitor:
-    def __init__(self):
-        self.recent_high = None
-        self.recent_high_time = None
-        self.notified_levels = set()
-        self.alert_interval = 100  # 每跌 100 點通知
-        self.min_alert_drop = 500  # 最少跌 500 點才開始通知
-        self.warmup_bars = 12  # 縮短為 1 小時（12根5分K）
-        self.is_warmed_up = False  # 是否已完成暖機
-        self.session_start_price = None  # 記錄盤中起始價格
-    
-    def update(self, df_5min):
-        """
-        更新價格並檢查是否需要通知
-        df_5min: 5分鐘K棒資料
-        """
-        if len(df_5min) < 2:
-            return None, None
-        
-        current_price = float(df_5min['close'].iloc[-1])
-        current_time = df_5min.index[-1]
-        
-        # 檢查是否為開盤時間（日盤 08:45 或夜盤 15:00）
-        current_hour = get_taiwan_time().hour
-        current_minute = get_taiwan_time().minute
-        
-        is_day_open = (current_hour == 8 and 45 <= current_minute <= 50)
-        is_night_open = (current_hour == 15 and 0 <= current_minute <= 5)
-        
-        # 開盤時重置基準點為當前價格
-        if (is_day_open or is_night_open) and self.session_start_price is None:
-            self.session_start_price = current_price
-            self.recent_high = current_price
-            self.recent_high_time = current_time
-            self.notified_levels.clear()
-            self.is_warmed_up = True
-            
-            session_type = "日盤" if is_day_open else "夜盤"
-            send_alert(
-                f"✅ {session_type}開盤，下跌監控重置\n"
-                f"📊 起始價格: {current_price:,.0f}\n"
-                f"🎯 開始監控價格下跌"
-            )
-            return None, None
-        
-        # === 暖機階段：收集足夠資料（縮短為1小時）===
-        if not self.is_warmed_up:
-            if len(df_5min) < self.warmup_bars:
-                # 資料還不夠，繼續收集
-                if len(df_5min) % 6 == 0:  # 每 30 分鐘顯示一次進度
-                    remaining = self.warmup_bars - len(df_5min)
-                    remaining_minutes = remaining * 5
-                    print(f"⏳ 下跌監控暖機中... {len(df_5min)}/{self.warmup_bars} 根 K 棒 | 還需 {remaining_minutes} 分鐘")
-                return None, None
-            
-            # 暖機完成，從歷史資料找真正的高點
-            warmup_data = df_5min.tail(self.warmup_bars)
-            self.recent_high = float(warmup_data['high'].max())
-            self.recent_high_time = warmup_data['high'].idxmax()
-            self.is_warmed_up = True
-            
-            print("\n" + "=" * 60)
-            print("✅ 下跌監控暖機完成！開始監控價格下跌")
-            print("=" * 60)
-            print(f"📈 近期高點: {self.recent_high:,.0f}")
-            print(f"⏰ 高點時間: {self.recent_high_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"📊 當前價格: {current_price:,.0f}")
-            print(f"📉 當前跌幅: {self.recent_high - current_price:+.0f} 點")
-            print("=" * 60 + "\n")
-            
-            # 發送暖機完成通知
-            msg = (f"✅ 下跌監控暖機完成\n"
-                   f"📈 近期高點: {self.recent_high:,.0f}\n"
-                   f"⏰ 高點時間: {self.recent_high_time.strftime('%H:%M:%S')}\n"
-                   f"📊 當前價格: {current_price:,.0f}\n"
-                   f"🎯 開始監控價格下跌")
-            send_alert(msg)
-            
-            return None, None
-        
-        # === 正常運作階段：只在創新高時更新 ===
-        if current_price > self.recent_high:
-            print(f"✅ 創新高: {self.recent_high:,.0f} → {current_price:,.0f}")
-            self.recent_high = current_price
-            self.recent_high_time = current_time
-            self.notified_levels.clear()
-            return None, None
-        
-        # 計算跌幅並判斷通知
-        drop = self.recent_high - current_price
-        
-        if drop < self.min_alert_drop:
-            return None, None
-        
-        current_level = int((drop // self.alert_interval) * self.alert_interval)
-        
-        if current_level not in self.notified_levels:
-            self.notified_levels.add(current_level)
-            
-            signal_data = {
-                'recent_high': self.recent_high,
-                'current_price': current_price,
-                'drop': drop,
-                'drop_level': current_level,
-                'high_time': self.recent_high_time
-            }
-            
-            signal_type = f"價格下跌 {current_level} 點"
-            
-            return signal_type, signal_data
-        
-        return None, None
-    
-    def reset(self):
-        """重置監控器（用於週一重啟）"""
-        print("\n" + "=" * 60)
-        print("🔄 下跌監控器重置（週一重啟）")
-        print("=" * 60 + "\n")
-        self.recent_high = None
-        self.recent_high_time = None
-        self.notified_levels.clear()
-        self.is_warmed_up = False
-        self.session_start_price = None  # 重置盤中起始價格
-
 # 建立全域監控器
-price_monitor = PriceDropMonitor()
-price_rise_monitor = PriceRiseMonitor()
-
-def check_divergence(df):
-    """
-    價格下跌檢測（取代原本的背離判斷）
-    跌 500 點後開始通知，之後每跌 100 點通知一次
-    """
-    return price_monitor.update(df)
+session_monitor = SessionMonitor()
 
 # === 階段 1：數據收集 ===
 def record_signal(signal_type, price, signal_data, df_5min):
@@ -486,15 +346,15 @@ def record_signal(signal_type, price, signal_data, df_5min):
         
         # 根據訊號類型調整資料欄位
         if '下跌' in signal_type:
-            slope = float(signal_data.get('drop', 0))
-            hist_avg = float(signal_data.get('recent_high', price))
+            slope = float(signal_data.get('change', 0))
+            hist_avg = float(signal_data.get('session_open_price', price))
             hist_now = float(signal_data.get('current_price', price))
-            price_range = float(signal_data.get('drop', 0))
+            price_range = abs(float(signal_data.get('change', 0)))
         elif '上漲' in signal_type:
-            slope = float(signal_data.get('rise', 0))
-            hist_avg = float(signal_data.get('recent_low', price))
+            slope = float(signal_data.get('change', 0))
+            hist_avg = float(signal_data.get('session_open_price', price))
             hist_now = float(signal_data.get('current_price', price))
-            price_range = float(signal_data.get('rise', 0))
+            price_range = abs(float(signal_data.get('change', 0)))
         else:
             slope = 0
             hist_avg = price
@@ -546,9 +406,9 @@ def update_signal_results(df_5min):
                 signal.price_1hour = current_price
                 
                 # 判斷訊號結果
-                if '看多' in signal.signal_type or '轉多' in signal.signal_type:
+                if '上漲' in signal.signal_type:
                     profit_loss = current_price - signal.entry_price
-                else:  # 看空
+                else:  # 下跌
                     profit_loss = signal.entry_price - current_price
                 
                 signal.profit_loss = profit_loss
@@ -702,11 +562,11 @@ def optimize_parameters(stats):
 def main():
     import sys
     print("=" * 60, flush=True)
-    print("🤖 開始監控台指期價格雙向訊號（開盤重置機制）", flush=True)
+    print("🤖 開始監控台指期價格（以開盤價為基準）", flush=True)
     print("=" * 60, flush=True)
-    print("📌 開盤重置：日盤08:45、夜盤15:00自動重置基準點", flush=True)
+    print("📌 監控策略：以開盤價為基準點計算漲跌幅", flush=True)
+    print("📌 日盤開盤：08:45 | 夜盤開盤：15:00", flush=True)
     print("📌 通知規則：漲/跌 500 點後開始通知，之後每 100 點通知一次", flush=True)
-    print(f"📌 暖機時間：{price_monitor.warmup_bars * 5} 分鐘（{price_monitor.warmup_bars} 根 K 棒）", flush=True)
     print("📌 週一重啟：每週一 08:30 清空週末資料", flush=True)
     print("=" * 60 + "\n", flush=True)
     sys.stdout.flush()
@@ -727,15 +587,11 @@ def main():
     while True:
         loop_count += 1
         
-        # === 檢查是否需要日盤開盤前重置 ===
+        # === 檢查是否需要週一重置 ===
         current_time = get_taiwan_time()  # 使用台灣時間
         current_date = current_time.date()
         current_hour = current_time.hour
         current_minute = current_time.minute
-        
-        # === 不再自動重啟，讓程式連續運行 ===
-        # 原因：夜盤和日盤是連續的，不應該清空夜盤的高點
-        # 如果需要重啟，請手動重啟服務
         
         # 每週一 08:30 重置一次（週末後重新開始）
         if (current_date.weekday() == 0 and  # 週一
@@ -751,8 +607,7 @@ def main():
             print("=" * 70 + "\n")
             
             # 重置監控器
-            price_monitor.reset()
-            price_rise_monitor.reset()
+            session_monitor.reset()
             
             # 清空 tick 資料（保持 DatetimeIndex）
             df_tick = pd.DataFrame(columns=['Close'])
@@ -766,7 +621,7 @@ def main():
             msg = (f"🌅 週一開盤前自動重置\n"
                    f"⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                    f"🔄 清空週末資料\n"
-                   f"⏳ 開始 1 小時暖機期")
+                   f"🎯 等待開盤設定基準點")
             send_alert(msg)
             
             print("✅ 重置完成，繼續監控...\n")
@@ -775,8 +630,8 @@ def main():
         now_tw = get_taiwan_time()
         if (now_tw - last_heartbeat).total_seconds() >= 60:
             import sys
-            warmup_status = "暖機中" if not price_monitor.is_warmed_up else "監控中"
-            print(f"💓 心跳 #{loop_count} | {now_tw.strftime('%Y-%m-%d %H:%M:%S')} (台灣) | {warmup_status}...", flush=True)
+            session_status = f"{session_monitor.session_type}監控中" if session_monitor.is_session_started else "等待開盤"
+            print(f"💓 心跳 #{loop_count} | {now_tw.strftime('%Y-%m-%d %H:%M:%S')} (台灣) | {session_status}...", flush=True)
             sys.stdout.flush()
             last_heartbeat = now_tw
         
@@ -839,7 +694,7 @@ def main():
                 print("=" * 60)
                 print(f"📊 當前有 {len(df_5min)} 根 5 分鐘 K 棒")
                 print(f"📈 最新價格: {price:,.0f}")
-                print(f"⏳ 暖機需要: {price_monitor.warmup_bars} 根 K 棒（{price_monitor.warmup_bars * 5} 分鐘）")
+                print(f"🎯 等待開盤時設定基準點")
                 print("=" * 60 + "\n")
             
             df_5min = calc_macd(df_5min)
@@ -855,37 +710,27 @@ def main():
                     optimize_parameters(stats)
                 last_analysis_time = get_taiwan_time()
             
-            # 檢查價格下跌訊號
-            drop_alert, drop_data = price_monitor.update(df_5min)
-            rise_alert, rise_data = price_rise_monitor.update(df_5min)
-
-            # 決定要發送哪個訊號
-            alert = None
-            signal_data = None
-
-            if drop_alert:
-                alert = drop_alert
-                signal_data = drop_data
-            elif rise_alert:
-                alert = rise_alert
-                signal_data = rise_data
+            # 檢查價格變化訊號
+            alert, signal_data = session_monitor.update(df_5min)
             
             # 每 3 分鐘顯示一次詳細狀態
             if data_ready and loop_count % 60 == 0:  # 每 60 個循環（約 3 分鐘）
-                if price_monitor.is_warmed_up:
-                    recent_high = price_monitor.recent_high
-                    drop = recent_high - price
+                if session_monitor.is_session_started:
+                    open_price = session_monitor.session_open_price
+                    change = price - open_price
+                    session_type = session_monitor.session_type
                     print(f"📊 {datetime.now().strftime('%H:%M:%S')} | "
-                          f"價格: {price:,.0f} | "
-                          f"高點: {recent_high:,.0f} | "
-                          f"跌幅: {drop:+.0f} | "
+                          f"{session_type} | "
+                          f"開盤價: {open_price:,.0f} | "
+                          f"現價: {price:,.0f} | "
+                          f"變化: {change:+.0f} | "
                           f"K棒: {len(df_5min)} | "
                           f"循環: #{loop_count}")
                 else:
-                    remaining = price_monitor.warmup_bars - len(df_5min)
                     print(f"⏳ {get_taiwan_time().strftime('%H:%M:%S')} | "
-                          f"暖機中: {len(df_5min)}/{price_monitor.warmup_bars} | "
-                          f"還需 {remaining * 5} 分鐘 | "
+                          f"等待開盤 | "
+                          f"現價: {price:,.0f} | "
+                          f"K棒: {len(df_5min)} | "
                           f"循環: #{loop_count}")
             
             now = get_taiwan_time()
@@ -895,28 +740,24 @@ def main():
                 # 記錄訊號
                 record_signal(alert, price, signal_data, df_5min)
                 
-                # 發送通知（根據訊號類型調整格式）
-                if '下跌' in alert:
-                    # 下跌通知
-                    high_time_str = signal_data['high_time'].strftime('%H:%M:%S')
-                    msg = (f"⚠️ {alert}\n"
-                           f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                           f"📈 高點: {signal_data['recent_high']:,.0f} ({high_time_str})\n"
-                           f"📉 現價: {signal_data['current_price']:,.0f}\n"
-                           f"💥 跌幅: {signal_data['drop']:.0f} 點\n"
-                           f"🎯 級距: {signal_data['drop_level']} 點")
-                elif '上漲' in alert:
-                    # 上漲通知
-                    low_time_str = signal_data['low_time'].strftime('%H:%M:%S')
+                # 發送通知
+                open_time_str = signal_data['open_time'].strftime('%H:%M:%S')
+                session_type = signal_data['session_type']
+                
+                if '上漲' in alert:
                     msg = (f"🚀 {alert}\n"
                            f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                           f"📉 低點: {signal_data['recent_low']:,.0f} ({low_time_str})\n"
+                           f"📊 {session_type}開盤價: {signal_data['session_open_price']:,.0f} ({open_time_str})\n"
                            f"📈 現價: {signal_data['current_price']:,.0f}\n"
-                           f"💥 漲幅: {signal_data['rise']:.0f} 點\n"
-                           f"🎯 級距: {signal_data['rise_level']} 點")
-                else:
-                    # 預設格式
-                    msg = f"⚠️ {alert}\n⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n💰 價格: {price:,.0f}"
+                           f"💥 漲幅: {signal_data['change']:.0f} 點\n"
+                           f"🎯 級距: {signal_data['change_level']} 點")
+                else:  # 下跌
+                    msg = (f"⚠️ {alert}\n"
+                           f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                           f"📊 {session_type}開盤價: {signal_data['session_open_price']:,.0f} ({open_time_str})\n"
+                           f"📉 現價: {signal_data['current_price']:,.0f}\n"
+                           f"💥 跌幅: {abs(signal_data['change']):.0f} 點\n"
+                           f"🎯 級距: {signal_data['change_level']} 點")
                 
                 send_alert(msg)
                 
@@ -931,12 +772,12 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Service is running (AI Learning Version)", 200
+    return "Service is running (Open Price Based Version)", 200
 
 @app.route("/health")
 def health():
     """健康檢查端點 - 快速回應"""
-    return {"status": "ok", "service": "macd-monitor", "timestamp": datetime.now().isoformat()}, 200
+    return {"status": "ok", "service": "session-monitor", "timestamp": datetime.now().isoformat()}, 200
 
 @app.route("/heartbeat")
 def heartbeat():
@@ -974,7 +815,7 @@ def view_signals():
         session = Session()
         signals = session.query(SignalLog).order_by(SignalLog.timestamp.desc()).limit(50).all()
         
-        html = "<h1>MACD 訊號記錄（最近 50 筆）</h1>"
+        html = "<h1>交易時段訊號記錄（最近 50 筆）</h1>"
         html += "<table border='1' style='border-collapse: collapse; width: 100%;'>"
         html += "<tr><th>時間</th><th>訊號類型</th><th>進場價</th><th>結果</th><th>損益</th></tr>"
         
@@ -1032,7 +873,7 @@ if __name__ == "__main__":
     import sys
     current_time = datetime.now()
     print("\n" + "=" * 70, flush=True)
-    print("🚀 MACD 監控系統啟動中...", flush=True)
+    print("🚀 台指期開盤價基準監控系統啟動中...", flush=True)
     print("=" * 70, flush=True)
     print(f"⏰ 啟動時間: {current_time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     print(f"📅 星期: {['一', '二', '三', '四', '五', '六', '日'][current_time.weekday()]}", flush=True)
