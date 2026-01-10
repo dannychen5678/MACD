@@ -350,8 +350,9 @@ class PriceDropMonitor:
         self.notified_levels = set()
         self.alert_interval = 100  # 每跌 100 點通知
         self.min_alert_drop = 500  # 最少跌 500 點才開始通知
-        self.warmup_bars = 36  # 暖機期：需要 36 根 K 棒（3 小時）- 方案 A
+        self.warmup_bars = 12  # 縮短為 1 小時（12根5分K）
         self.is_warmed_up = False  # 是否已完成暖機
+        self.session_start_price = None  # 記錄盤中起始價格
     
     def update(self, df_5min):
         """
@@ -364,14 +365,37 @@ class PriceDropMonitor:
         current_price = float(df_5min['close'].iloc[-1])
         current_time = df_5min.index[-1]
         
-        # === 暖機階段：收集足夠資料（方案 A：3 小時）===
+        # 檢查是否為開盤時間（日盤 08:45 或夜盤 15:00）
+        current_hour = get_taiwan_time().hour
+        current_minute = get_taiwan_time().minute
+        
+        is_day_open = (current_hour == 8 and 45 <= current_minute <= 50)
+        is_night_open = (current_hour == 15 and 0 <= current_minute <= 5)
+        
+        # 開盤時重置基準點為當前價格
+        if (is_day_open or is_night_open) and self.session_start_price is None:
+            self.session_start_price = current_price
+            self.recent_high = current_price
+            self.recent_high_time = current_time
+            self.notified_levels.clear()
+            self.is_warmed_up = True
+            
+            session_type = "日盤" if is_day_open else "夜盤"
+            send_alert(
+                f"✅ {session_type}開盤，下跌監控重置\n"
+                f"📊 起始價格: {current_price:,.0f}\n"
+                f"🎯 開始監控價格下跌"
+            )
+            return None, None
+        
+        # === 暖機階段：收集足夠資料（縮短為1小時）===
         if not self.is_warmed_up:
             if len(df_5min) < self.warmup_bars:
                 # 資料還不夠，繼續收集
                 if len(df_5min) % 6 == 0:  # 每 30 分鐘顯示一次進度
                     remaining = self.warmup_bars - len(df_5min)
                     remaining_minutes = remaining * 5
-                    print(f"⏳ 暖機中... {len(df_5min)}/{self.warmup_bars} 根 K 棒 | 還需 {remaining_minutes} 分鐘")
+                    print(f"⏳ 下跌監控暖機中... {len(df_5min)}/{self.warmup_bars} 根 K 棒 | 還需 {remaining_minutes} 分鐘")
                 return None, None
             
             # 暖機完成，從歷史資料找真正的高點
@@ -381,17 +405,17 @@ class PriceDropMonitor:
             self.is_warmed_up = True
             
             print("\n" + "=" * 60)
-            print("✅ 暖機完成！開始監控價格下跌")
+            print("✅ 下跌監控暖機完成！開始監控價格下跌")
             print("=" * 60)
-            print(f"📈 歷史高點: {self.recent_high:,.0f}")
+            print(f"📈 近期高點: {self.recent_high:,.0f}")
             print(f"⏰ 高點時間: {self.recent_high_time.strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"📊 當前價格: {current_price:,.0f}")
             print(f"📉 當前跌幅: {self.recent_high - current_price:+.0f} 點")
             print("=" * 60 + "\n")
             
             # 發送暖機完成通知
-            msg = (f"✅ 監控系統暖機完成\n"
-                   f"📈 歷史高點: {self.recent_high:,.0f}\n"
+            msg = (f"✅ 下跌監控暖機完成\n"
+                   f"📈 近期高點: {self.recent_high:,.0f}\n"
                    f"⏰ 高點時間: {self.recent_high_time.strftime('%H:%M:%S')}\n"
                    f"📊 當前價格: {current_price:,.0f}\n"
                    f"🎯 開始監控價格下跌")
@@ -433,14 +457,15 @@ class PriceDropMonitor:
         return None, None
     
     def reset(self):
-        """重置監控器（用於日盤開盤時）"""
+        """重置監控器（用於週一重啟）"""
         print("\n" + "=" * 60)
-        print("🔄 監控器重置（日盤開盤）")
+        print("🔄 下跌監控器重置（週一重啟）")
         print("=" * 60 + "\n")
         self.recent_high = None
         self.recent_high_time = None
         self.notified_levels.clear()
         self.is_warmed_up = False
+        self.session_start_price = None  # 重置盤中起始價格
 
 # 建立全域監控器
 price_monitor = PriceDropMonitor()
@@ -677,12 +702,12 @@ def optimize_parameters(stats):
 def main():
     import sys
     print("=" * 60, flush=True)
-    print("🤖 開始監控台指期價格下跌訊號（方案 A：3 小時暖機）", flush=True)
+    print("🤖 開始監控台指期價格雙向訊號（開盤重置機制）", flush=True)
     print("=" * 60, flush=True)
-    print("📌 暖機策略：收集 3 小時資料後開始監控", flush=True)
-    print("📌 通知規則：跌 500 點後開始通知，之後每跌 100 點通知一次", flush=True)
+    print("📌 開盤重置：日盤08:45、夜盤15:00自動重置基準點", flush=True)
+    print("📌 通知規則：漲/跌 500 點後開始通知，之後每 100 點通知一次", flush=True)
     print(f"📌 暖機時間：{price_monitor.warmup_bars * 5} 分鐘（{price_monitor.warmup_bars} 根 K 棒）", flush=True)
-    print("📌 自動重啟：每日 08:30 日盤開盤前重置", flush=True)
+    print("📌 週一重啟：每週一 08:30 清空週末資料", flush=True)
     print("=" * 60 + "\n", flush=True)
     sys.stdout.flush()
     
@@ -741,7 +766,7 @@ def main():
             msg = (f"🌅 週一開盤前自動重置\n"
                    f"⏰ {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                    f"🔄 清空週末資料\n"
-                   f"⏳ 開始 3 小時暖機期")
+                   f"⏳ 開始 1 小時暖機期")
             send_alert(msg)
             
             print("✅ 重置完成，繼續監控...\n")
