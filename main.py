@@ -87,6 +87,22 @@ class SessionMonitor:
         self.min_alert_change = 500   # 漲/跌 500 點才開始通知
         self.is_session_started = False
 
+    def is_market_open(self):
+        """檢查是否在交易時間內"""
+        now = get_taiwan_time()
+        current_hour = now.hour
+        current_minute = now.minute
+        
+        # 日盤：08:45-13:45
+        if (current_hour == 8 and current_minute >= 45) or (9 <= current_hour <= 12) or (current_hour == 13 and current_minute <= 45):
+            return True, "日盤"
+        
+        # 夜盤：15:00-05:00（跨日）
+        if current_hour >= 15 or current_hour <= 4 or (current_hour == 5 and current_minute == 0):
+            return True, "夜盤"
+        
+        return False, "休市"
+
     def update(self, df_5min):
         if len(df_5min) < 2:
             return None, None
@@ -629,7 +645,17 @@ def main():
         now_tw = get_taiwan_time()
         if (now_tw - last_heartbeat).total_seconds() >= 60:
             import sys
-            session_status = f"{session_monitor.session_type}監控中" if session_monitor.is_session_started else "等待開盤"
+            
+            # 檢查市場狀態
+            is_open, market_session = session_monitor.is_market_open()
+            
+            if session_monitor.is_session_started and is_open:
+                session_status = f"{session_monitor.session_type}監控中"
+            elif session_monitor.is_session_started and not is_open:
+                session_status = f"休市中（{session_monitor.session_type}已設定基準）"
+            else:
+                session_status = "等待開盤"
+                
             print(f"💓 心跳 #{loop_count} | {now_tw.strftime('%Y-%m-%d %H:%M:%S')} (台灣) | {session_status}...", flush=True)
             sys.stdout.flush()
             last_heartbeat = now_tw
