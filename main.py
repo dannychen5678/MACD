@@ -62,8 +62,15 @@ class Parameters(Base):
     cooldown_minutes = Column(Integer, nullable=False)
     last_update = Column(DateTime, nullable=False)
 
-# 建立資料庫連線
-engine = create_engine(DATABASE_URL)
+# 建立資料庫連線（增加連線池大小並設定回收時間）
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=20,           # 增加連線池大小
+    max_overflow=30,        # 增加溢出連線數
+    pool_recycle=3600,      # 1小時回收連線
+    pool_pre_ping=True,     # 使用前先測試連線
+    pool_timeout=60         # 增加超時時間
+)
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
@@ -191,6 +198,7 @@ class DynamicParams:
     
     def load_params(self):
         """載入已儲存的參數（從資料庫）"""
+        session = None
         try:
             session = Session()
             param = session.query(Parameters).order_by(Parameters.last_update.desc()).first()
@@ -200,7 +208,6 @@ class DynamicParams:
                 self.hist_confirm_bars = param.hist_confirm_bars
                 self.cooldown_minutes = param.cooldown_minutes
                 print(f"✅ 從資料庫載入參數: slope={self.slope_threshold}, lookback={self.lookback}")
-            session.close()
         except Exception as e:
             print(f"⚠️ 資料庫載入失敗，使用預設參數: {e}")
             # 備用：從本地檔案載入
@@ -209,9 +216,13 @@ class DynamicParams:
                     params = json.load(f)
                     self.slope_threshold = params.get('slope_threshold', 3.0)
                     self.lookback = params.get('lookback', 10)
+        finally:
+            if session:
+                session.close()
     
     def save_params(self):
         """儲存參數（到資料庫）"""
+        session = None
         try:
             session = Session()
             param = Parameters(
@@ -223,10 +234,11 @@ class DynamicParams:
             )
             session.add(param)
             session.commit()
-            session.close()
             print(f"✅ 參數已儲存到資料庫")
         except Exception as e:
             print(f"⚠️ 資料庫儲存失敗: {e}")
+            if session:
+                session.rollback()
             # 備用：儲存到本地檔案
             params = {
                 'slope_threshold': self.slope_threshold,
@@ -237,6 +249,9 @@ class DynamicParams:
             }
             with open(PARAMS_FILE, 'w') as f:
                 json.dump(params, f, indent=2)
+        finally:
+            if session:
+                session.close()
 
 params = DynamicParams()
 
@@ -356,6 +371,7 @@ session_monitor = SessionMonitor()
 # === 階段 1：數據收集 ===
 def record_signal(signal_type, price, signal_data, df_5min):
     """記錄訊號到資料庫"""
+    session = None
     try:
         session = Session()
         
@@ -389,14 +405,19 @@ def record_signal(signal_type, price, signal_data, df_5min):
         )
         session.add(signal)
         session.commit()
-        session.close()
         print(f"✅ 訊號已記錄到資料庫: {signal_type}")
         
     except Exception as e:
         print(f"❌ 記錄訊號失敗: {e}")
+        if session:
+            session.rollback()
+    finally:
+        if session:
+            session.close()
 
 def update_signal_results(df_5min):
     """更新訊號結果（追蹤價格變化）"""
+    session = None
     try:
         session = Session()
         current_time = get_taiwan_time()
@@ -443,14 +464,19 @@ def update_signal_results(df_5min):
                 print(f"✅ 訊號結果已更新: {signal.signal_type} -> {signal.result}")
         
         session.commit()
-        session.close()
         
     except Exception as e:
         print(f"❌ 更新訊號結果失敗: {e}")
+        if session:
+            session.rollback()
+    finally:
+        if session:
+            session.close()
 
 # === 階段 2：結果分析 ===
 def analyze_signals():
     """分析訊號勝率（從資料庫）"""
+    session = None
     try:
         session = Session()
         
@@ -458,7 +484,6 @@ def analyze_signals():
         completed_signals = session.query(SignalLog).filter(SignalLog.result != None).all()
         
         if len(completed_signals) == 0:
-            session.close()
             return None
         
         # 轉換為 DataFrame 方便分析
@@ -494,12 +519,14 @@ def analyze_signals():
                 'avg_profit': df_type['profit_loss'].mean()
             }
         
-        session.close()
         return stats
         
     except Exception as e:
         print(f"❌ 分析訊號失敗: {e}")
         return None
+    finally:
+        if session:
+            session.close()
 
 def print_statistics(stats):
     """打印統計報告"""
@@ -836,6 +863,7 @@ def heartbeat():
 @app.route("/signals")
 def view_signals():
     """查看所有訊號記錄"""
+    session = None
     try:
         session = Session()
         signals = session.query(SignalLog).order_by(SignalLog.timestamp.desc()).limit(50).all()
@@ -861,10 +889,12 @@ def view_signals():
             html += f"</tr>"
         
         html += "</table>"
-        session.close()
         return html
     except Exception as e:
         return f"Error: {e}", 500
+    finally:
+        if session:
+            session.close()
 
 @app.route("/stats")
 def view_stats():
