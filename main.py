@@ -117,26 +117,41 @@ class SessionMonitor:
         current_price = float(df_5min['close'].iloc[-1])
         current_time = df_5min.index[-1]
         
-        # 檢查是否為開盤時間
+        # 檢查當前是否在交易時間內
+        is_open, market_session = self.is_market_open()
         current_hour = get_taiwan_time().hour
         current_minute = get_taiwan_time().minute
         
-        is_day_open = (current_hour == 8 and 45 <= current_minute <= 50)
-        is_night_open = (current_hour == 15 and 0 <= current_minute <= 5)
+        # 判斷是否為開盤時間（擴大時間範圍到 30 分鐘）
+        is_day_open = (current_hour == 8 and current_minute >= 45) or (current_hour == 9 and current_minute <= 15)
+        is_night_open = (current_hour == 15 and current_minute <= 30)
         
-        # 開盤時設定基準點為開盤價
-        if (is_day_open or is_night_open) and not self.is_session_started:
+        # 如果在交易時間內但還沒設定基準點，立即設定
+        if is_open and not self.is_session_started:
             self.session_open_price = current_price
             self.session_open_time = current_time
-            self.session_type = "日盤" if is_day_open else "夜盤"
+            self.session_type = market_session  # 使用 is_market_open() 的判斷結果
             self.notified_levels.clear()
             self.is_session_started = True
             
-            send_alert(
-                f"✅ {self.session_type}開盤\n"
-                f"📊 開盤價: {current_price:,.0f}\n"
-                f"🎯 開始監控從開盤價算起的漲跌幅"
-            )
+            # 判斷是正常開盤還是延遲啟動
+            if is_day_open or is_night_open:
+                msg = (f"✅ {self.session_type}開盤\n"
+                       f"📊 開盤價: {current_price:,.0f}\n"
+                       f"🎯 開始監控從開盤價算起的漲跌幅")
+            else:
+                msg = (f"⚠️ {self.session_type}盤中啟動\n"
+                       f"📊 當前價格: {current_price:,.0f}\n"
+                       f"🎯 以此價格為基準點開始監控\n"
+                       f"💡 注意：非開盤價，可能影響準確度")
+            
+            send_alert(msg)
+            return None, None
+
+        # 如果不在交易時間且已設定基準點，重置監控器（準備下一個交易時段）
+        if not is_open and self.is_session_started:
+            print(f"🔄 {self.session_type}收盤，重置監控器")
+            self.reset()
             return None, None
 
         # 如果還沒開始交易時段，不進行監控
