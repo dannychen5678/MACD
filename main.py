@@ -766,6 +766,9 @@ def main():
             
             df_5min = calc_macd(df_5min)
             
+            # 檢查價格變化訊號（優先執行，確保基準點設定）
+            alert, signal_data = session_monitor.update(df_5min)
+            
             # 更新訊號結果
             update_signal_results(df_5min)
             
@@ -776,9 +779,6 @@ def main():
                     print_statistics(stats)
                     optimize_parameters(stats)
                 last_analysis_time = get_taiwan_time()
-            
-            # 檢查價格變化訊號
-            alert, signal_data = session_monitor.update(df_5min)
             
             # 每 3 分鐘顯示一次詳細狀態
             if data_ready and loop_count % 60 == 0:  # 每 60 個循環（約 3 分鐘）
