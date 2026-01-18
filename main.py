@@ -94,8 +94,30 @@ class SessionMonitor:
         self.min_alert_change = 500   # 漲/跌 500 點才開始通知
         self.is_session_started = False
 
-    def is_market_open(self):
-        """檢查是否在交易時間內"""
+    def is_market_open(self, status=None):
+        """檢查是否在交易時間內 - 根據 Status 判斷"""
+        
+        # 如果有 Status 參數，直接使用
+        if status is not None:
+            if status == "開盤":
+                # 正在交易中，根據時間判斷是日盤還是夜盤
+                now = get_taiwan_time()
+                current_hour = now.hour
+                current_minute = now.minute
+                
+                # 日盤：08:45-13:45
+                if (current_hour == 8 and current_minute >= 45) or (9 <= current_hour <= 12) or (current_hour == 13 and current_minute <= 45):
+                    return True, "日盤"
+                
+                # 夜盤：15:00-05:00（跨日）
+                if current_hour >= 15 or current_hour <= 4 or (current_hour == 5 and current_minute == 0):
+                    return True, "夜盤"
+                    
+            elif status == "收盤":
+                # 收盤狀態 = 不在交易時間
+                return False, "休市"
+        
+        # 備用：原本的時間判斷邏輯
         now = get_taiwan_time()
         current_hour = now.hour
         current_minute = now.minute
@@ -289,8 +311,34 @@ def get_taiwan_time():
     """取得台灣時間"""
     return datetime.now(TW_TZ)
 
-def get_market_type():
-    """切換交易時段"""
+def get_market_type(current_status=None):
+    """切換交易時段 - 根據 Status 自動切換 MarketType"""
+    
+    # 如果有 Status 參數，根據狀態決定是否切換
+    if current_status is not None:
+        now = get_taiwan_time().time()
+        
+        if current_status == "開盤":
+            # 正在交易中，根據時間判斷是日盤還是夜盤
+            if datetime.strptime("08:45", "%H:%M").time() <= now <= datetime.strptime("13:45", "%H:%M").time():
+                return "0"  # 日盤交易中
+            elif now >= datetime.strptime("15:00", "%H:%M").time() or now <= datetime.strptime("05:00", "%H:%M").time():
+                return "1"  # 夜盤交易中
+        
+        elif current_status == "收盤":
+            # 收盤狀態，根據時間判斷下一個交易時段
+            if datetime.strptime("13:45", "%H:%M").time() < now < datetime.strptime("15:00", "%H:%M").time():
+                return "1"  # 日盤收盤，準備夜盤
+            elif datetime.strptime("05:00", "%H:%M").time() < now < datetime.strptime("08:45", "%H:%M").time():
+                return "0"  # 夜盤收盤，準備日盤
+            else:
+                # 其他時間，根據時間推測
+                if now >= datetime.strptime("15:00", "%H:%M").time() or now <= datetime.strptime("05:00", "%H:%M").time():
+                    return "1"  # 夜盤時段
+                else:
+                    return "0"  # 日盤時段
+    
+    # 備用：原本的時間判斷邏輯
     now = get_taiwan_time().time()
     if datetime.strptime("08:45", "%H:%M").time() <= now <= datetime.strptime("13:45", "%H:%M").time():
         return "0"
@@ -298,9 +346,9 @@ def get_market_type():
         return "1"
     return "0"
 
-def get_payload():  
+def get_payload(status=None):  
     return {
-        "MarketType": get_market_type(),
+        "MarketType": get_market_type(status),
         "SymbolType": "F",
         "KindID": "1",
         "CID": "TXF",
@@ -332,19 +380,19 @@ def send_alert(msg):
     """發送通知給 Telegram"""
     requests.post(API_URL, data={"chat_id": CHAT_ID, "text": msg})
 
-def fetch_latest_price():
+def fetch_latest_price(previous_status=None):
     """抓取最新成交價和開盤價"""
     try:
-        r = requests.post(URL, json=get_payload(), headers={"Content-Type": "application/json"})
+        r = requests.post(URL, json=get_payload(previous_status), headers={"Content-Type": "application/json"})
         
         if r.status_code != 200:
-            return None, None, None, None
+            return None, None, None, None, None
         
         data = r.json()
         quotes = data.get("RtData", {}).get("QuoteList", [])
         
         if not quotes:
-            return None, None, None, None
+            return None, None, None, None, None
 
         # 優先選擇近月合約（通常是 TXFL5-M 或類似格式）
         # 過濾條件：
@@ -362,7 +410,7 @@ def fetch_latest_price():
         ]
         
         if not txf_list:
-            return None, None, None, None
+            return None, None, None, None, None
 
         # 選擇成交量最大的合約（通常是近月）
         q = max(txf_list, key=lambda x: int(x.get("CTotalVolume", "0") or "0"))
@@ -370,6 +418,7 @@ def fetch_latest_price():
         price = float(q["CLastPrice"])
         ref_price = float(q["CRefPrice"]) if q["CRefPrice"] else price
         open_price = float(q["COpenPrice"]) if q.get("COpenPrice") and q["COpenPrice"] != "" else None
+        status = q.get("Status", "")  # 取得交易狀態：開盤 或 收盤
         timestamp = get_taiwan_time()  # 使用台灣時間
         
         # 顯示選擇的合約（前 3 次）
@@ -379,13 +428,15 @@ def fetch_latest_price():
         fetch_count += 1
         if fetch_count <= 3:
             open_str = f" | 開盤價: {open_price:,.0f}" if open_price else " | 開盤價: N/A"
-            print(f"📊 選擇合約: {q['SymbolID']} | 現價: {price:,.0f}{open_str} | 成交量: {q['CTotalVolume']}")
+            status_str = f" | 狀態: {status}" if status else ""
+            market_type = get_market_type(previous_status)
+            print(f"📊 選擇合約: {q['SymbolID']} | 現價: {price:,.0f}{open_str} | 成交量: {q['CTotalVolume']}{status_str} | MarketType: {market_type}")
         
-        return timestamp, price, ref_price, open_price
+        return timestamp, price, ref_price, open_price, status
 
     except Exception as e:
         print(f"❌ 抓取價格失敗: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
 
 # === 標準 MACD 計算 ===
 def calc_macd(df):
@@ -706,7 +757,7 @@ def main():
             import sys
             
             # 檢查市場狀態
-            is_open, market_session = session_monitor.is_market_open()
+            is_open, market_session = session_monitor.is_market_open(status if 'status' in locals() else None)
             
             if session_monitor.is_session_started and is_open:
                 session_status = f"{session_monitor.session_type}監控中"
@@ -727,9 +778,9 @@ def main():
                 print("⚠️ Keep-alive 執行緒已停止，嘗試重啟...", flush=True)
             last_keepalive_check = now_tw
         
-        timestamp, price, current_ref, open_price = fetch_latest_price()
+        timestamp, price, current_ref, open_price, status = fetch_latest_price(status if 'status' in locals() else None)
         
-        # 快取開盤價（供 SessionMonitor 使用）
+        # 快取開盤價和狀態（供 SessionMonitor 使用）
         if open_price:
             session_monitor._cached_open_price = open_price
         
@@ -788,7 +839,7 @@ def main():
             df_5min = calc_macd(df_5min)
             
             # 檢查價格變化訊號（優先執行，確保基準點設定）
-            alert, signal_data = session_monitor.update(df_5min)
+            alert, signal_data = session_monitor.update(df_5min, status)
             
             # 更新訊號結果
             update_signal_results(df_5min)
