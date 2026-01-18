@@ -132,15 +132,15 @@ class SessionMonitor:
         
         return False, "休市"
 
-    def update(self, df_5min):
+    def update(self, df_5min, status=None):
         if len(df_5min) < 2:
             return None, None
 
         current_price = float(df_5min['close'].iloc[-1])
         current_time = df_5min.index[-1]
         
-        # 檢查當前是否在交易時間內
-        is_open, market_session = self.is_market_open()
+        # 檢查當前是否在交易時間內（使用 status 參數）
+        is_open, market_session = self.is_market_open(status)
         current_hour = get_taiwan_time().hour
         current_minute = get_taiwan_time().minute
         
@@ -187,7 +187,8 @@ class SessionMonitor:
 
         # 如果不在交易時間且已設定基準點，重置監控器（準備下一個交易時段）
         if not is_open and self.is_session_started:
-            print(f"🔄 {self.session_type}收盤，重置監控器")
+            status_msg = f" (Status: {status})" if status else ""
+            print(f"🔄 {self.session_type}收盤{status_msg}，重置監控器")
             self.reset()
             return None, None
 
