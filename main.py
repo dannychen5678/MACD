@@ -117,10 +117,15 @@ class SessionMonitor:
                 # 收盤狀態 = 不在交易時間
                 return False, "休市"
         
-        # 備用：原本的時間判斷邏輯
+        # 備用：原本的時間判斷邏輯（加入週末檢查）
         now = get_taiwan_time()
         current_hour = now.hour
         current_minute = now.minute
+        weekday = now.weekday()  # 0=週一, 6=週日
+        
+        # 週六日不交易
+        if weekday == 5 or weekday == 6:  # 週六或週日
+            return False, "週末休市"
         
         # 日盤：08:45-13:45
         if (current_hour == 8 and current_minute >= 45) or (9 <= current_hour <= 12) or (current_hour == 13 and current_minute <= 45):
@@ -339,8 +344,15 @@ def get_market_type(current_status=None):
                 else:
                     return "0"  # 日盤時段
     
-    # 備用：原本的時間判斷邏輯
-    now = get_taiwan_time().time()
+    # 備用：原本的時間判斷邏輯（加入週末檢查）
+    now_dt = get_taiwan_time()
+    now = now_dt.time()
+    weekday = now_dt.weekday()  # 0=週一, 6=週日
+    
+    # 週六日不交易，返回預設值
+    if weekday == 5 or weekday == 6:  # 週六或週日
+        return "0"  # 預設返回日盤類型
+    
     if datetime.strptime("08:45", "%H:%M").time() <= now <= datetime.strptime("13:45", "%H:%M").time():
         return "0"
     if now >= datetime.strptime("15:00", "%H:%M").time() or now <= datetime.strptime("05:00", "%H:%M").time():
@@ -765,7 +777,11 @@ def main():
             elif session_monitor.is_session_started and not is_open:
                 session_status = f"休市中（{session_monitor.session_type}已設定基準）"
             else:
-                session_status = "等待開盤"
+                # 根據市場狀態顯示更準確的資訊
+                if market_session == "週末休市":
+                    session_status = "週末休市"
+                else:
+                    session_status = "等待開盤"
                 
             print(f"💓 心跳 #{loop_count} | {now_tw.strftime('%Y-%m-%d %H:%M:%S')} (台灣) | {session_status}...", flush=True)
             sys.stdout.flush()
