@@ -128,22 +128,37 @@ class SessionMonitor:
         
         # 如果在交易時間內但還沒設定基準點，立即設定
         if is_open and not self.is_session_started:
-            self.session_open_price = current_price
+            # 嘗試使用真實開盤價（從全域變數取得）
+            real_open_price = getattr(self, '_cached_open_price', None)
+            
+            if real_open_price:
+                self.session_open_price = real_open_price
+                price_source = "真實開盤價"
+            else:
+                self.session_open_price = current_price
+                price_source = "當前價格"
+            
             self.session_open_time = current_time
-            self.session_type = market_session  # 使用 is_market_open() 的判斷結果
+            self.session_type = market_session
             self.notified_levels.clear()
             self.is_session_started = True
+            
+            # 計算漲跌
+            change = current_price - self.session_open_price
             
             # 判斷是正常開盤還是延遲啟動
             if is_day_open or is_night_open:
                 msg = (f"✅ {self.session_type}開盤\n"
-                       f"📊 開盤價: {current_price:,.0f}\n"
+                       f"📊 開盤價: {self.session_open_price:,.0f}\n"
+                       f"� .現價: {current_price:,.0f}\n"
+                       f"💹 漲跌: {change:+.0f} 點\n"
                        f"🎯 開始監控從開盤價算起的漲跌幅")
             else:
                 msg = (f"⚠️ {self.session_type}盤中啟動\n"
-                       f"📊 當前價格: {current_price:,.0f}\n"
-                       f"🎯 以此價格為基準點開始監控\n"
-                       f"💡 注意：非開盤價，可能影響準確度")
+                       f"📊 基準價: {self.session_open_price:,.0f} ({price_source})\n"
+                       f"📈 現價: {current_price:,.0f}\n"
+                       f"💹 漲跌: {change:+.0f} 點\n"
+                       f"🎯 以此價格為基準點開始監控")
             
             send_alert(msg)
             return None, None
@@ -318,18 +333,18 @@ def send_alert(msg):
     requests.post(API_URL, data={"chat_id": CHAT_ID, "text": msg})
 
 def fetch_latest_price():
-    """抓取最新成交價"""
+    """抓取最新成交價和開盤價"""
     try:
         r = requests.post(URL, json=get_payload(), headers={"Content-Type": "application/json"})
         
         if r.status_code != 200:
-            return None, None, None
+            return None, None, None, None
         
         data = r.json()
         quotes = data.get("RtData", {}).get("QuoteList", [])
         
         if not quotes:
-            return None, None, None
+            return None, None, None, None
 
         # 優先選擇近月合約（通常是 TXFL5-M 或類似格式）
         # 過濾條件：
@@ -347,13 +362,14 @@ def fetch_latest_price():
         ]
         
         if not txf_list:
-            return None, None, None
+            return None, None, None, None
 
         # 選擇成交量最大的合約（通常是近月）
         q = max(txf_list, key=lambda x: int(x.get("CTotalVolume", "0") or "0"))
         
         price = float(q["CLastPrice"])
         ref_price = float(q["CRefPrice"]) if q["CRefPrice"] else price
+        open_price = float(q["COpenPrice"]) if q.get("COpenPrice") and q["COpenPrice"] != "" else None
         timestamp = get_taiwan_time()  # 使用台灣時間
         
         # 顯示選擇的合約（前 3 次）
@@ -362,13 +378,14 @@ def fetch_latest_price():
             fetch_count = 0
         fetch_count += 1
         if fetch_count <= 3:
-            print(f"📊 選擇合約: {q['SymbolID']} | 價格: {price:,.0f} | 成交量: {q['CTotalVolume']}")
+            open_str = f" | 開盤價: {open_price:,.0f}" if open_price else " | 開盤價: N/A"
+            print(f"📊 選擇合約: {q['SymbolID']} | 現價: {price:,.0f}{open_str} | 成交量: {q['CTotalVolume']}")
         
-        return timestamp, price, ref_price
+        return timestamp, price, ref_price, open_price
 
     except Exception as e:
         print(f"❌ 抓取價格失敗: {e}")
-        return None, None, None
+        return None, None, None, None
 
 # === 標準 MACD 計算 ===
 def calc_macd(df):
@@ -710,7 +727,11 @@ def main():
                 print("⚠️ Keep-alive 執行緒已停止，嘗試重啟...", flush=True)
             last_keepalive_check = now_tw
         
-        timestamp, price, current_ref = fetch_latest_price()
+        timestamp, price, current_ref, open_price = fetch_latest_price()
+        
+        # 快取開盤價（供 SessionMonitor 使用）
+        if open_price:
+            session_monitor._cached_open_price = open_price
         
         # 如果沒有價格，顯示警告（前 5 次）
         if not price and loop_count <= 5:
