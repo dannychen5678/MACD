@@ -523,7 +523,16 @@ def update_signal_results(df_5min):
         pending_signals = session.query(SignalLog).filter(SignalLog.result == None).all()
         
         for signal in pending_signals:
-            time_diff = (current_time - signal.timestamp).total_seconds() / 60
+            # 確保時間戳記有時區資訊
+            signal_timestamp = signal.timestamp
+            if signal_timestamp.tzinfo is None:
+                # 如果沒有時區資訊，假設是台灣時間
+                signal_timestamp = TW_TZ.localize(signal_timestamp)
+            elif signal_timestamp.tzinfo != TW_TZ:
+                # 如果時區不同，轉換為台灣時間
+                signal_timestamp = signal_timestamp.astimezone(TW_TZ)
+            
+            time_diff = (current_time - signal_timestamp).total_seconds() / 60
             
             # 更新 10 分鐘後價格
             if signal.price_10min is None and time_diff >= 10:
