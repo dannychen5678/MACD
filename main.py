@@ -149,6 +149,13 @@ class SessionMonitor:
         current_hour = get_taiwan_time().hour
         current_minute = get_taiwan_time().minute
         
+        # 調試輸出（前 5 次）
+        if not hasattr(self, '_debug_count'):
+            self._debug_count = 0
+        self._debug_count += 1
+        if self._debug_count <= 5:
+            print(f"🔍 調試: status='{status}', is_open={is_open}, market_session='{market_session}', is_session_started={self.is_session_started}")
+        
         # 判斷是否為開盤時間（擴大時間範圍到 30 分鐘）
         is_day_open = (current_hour == 8 and current_minute >= 45) or (current_hour == 9 and current_minute <= 15)
         is_night_open = (current_hour == 15 and current_minute <= 30)
@@ -810,6 +817,22 @@ def main():
         if open_price:
             session_monitor._cached_open_price = open_price
         
+        # 如果 API 沒有提供 status，根據時間和資料推測市場狀態
+        if not status and price and open_price:
+            now = get_taiwan_time()
+            weekday = now.weekday()
+            hour = now.hour
+            minute = now.minute
+            
+            # 週一到週五的交易時間
+            if weekday < 5:  # 週一到週五
+                if ((hour == 8 and minute >= 45) or (9 <= hour <= 12) or (hour == 13 and minute <= 45) or
+                    (hour >= 15) or (hour <= 4) or (hour == 5 and minute == 0)):
+                    status = "開盤"  # 推測為開盤狀態
+                    if not hasattr(session_monitor, '_status_inferred'):
+                        print(f"🔍 API 未提供狀態，根據時間推測為開盤狀態 ({hour:02d}:{minute:02d})")
+                        session_monitor._status_inferred = True
+        
         # 如果沒有價格，顯示警告（前 5 次）
         if not price and loop_count <= 5:
             import sys
@@ -1039,72 +1062,80 @@ def run_bot():
 
 if __name__ == "__main__":
     import sys
-    current_time = get_taiwan_time()  # 使用台灣時間
-    print("\n" + "=" * 70, flush=True)
-    print("🚀 台指期開盤價基準監控系統啟動中...", flush=True)
-    print("=" * 70, flush=True)
-    print(f"⏰ 啟動時間: {current_time.strftime('%Y-%m-%d %H:%M:%S')} (台灣時間)", flush=True)
-    print(f"📅 星期: {['一', '二', '三', '四', '五', '六', '日'][current_time.weekday()]}", flush=True)
+    import traceback
     
-    # 判斷交易時段
-    current_hour = current_time.hour
-    if 8 <= current_hour < 14:
-        print("🕐 當前時段: 日盤交易時間 (08:45-13:45)", flush=True)
-    elif 15 <= current_hour or current_hour < 5:
-        print("🌙 當前時段: 夜盤交易時間 (15:00-05:00)", flush=True)
-    else:
-        print("😴 當前時段: 休市時間", flush=True)
-    
-    print("🌐 Flask 服務準備中...", flush=True)
-    print("=" * 70 + "\n", flush=True)
-    sys.stdout.flush()
-    
-    # 延遲啟動監控執行緒，避免啟動超時
-    def delayed_start():
-        import time
-        import sys
-        time.sleep(5)  # 等待 Flask 完全啟動
+    try:
+        current_time = get_taiwan_time()  # 使用台灣時間
         print("\n" + "=" * 70, flush=True)
-        print("🤖 監控執行緒啟動中...", flush=True)
+        print("🚀 台指期開盤價基準監控系統啟動中...", flush=True)
+        print("=" * 70, flush=True)
+        print(f"⏰ 啟動時間: {current_time.strftime('%Y-%m-%d %H:%M:%S')} (台灣時間)", flush=True)
+        print(f"📅 星期: {['一', '二', '三', '四', '五', '六', '日'][current_time.weekday()]}", flush=True)
+        
+        # 判斷交易時段
+        current_hour = current_time.hour
+        if 8 <= current_hour < 14:
+            print("🕐 當前時段: 日盤交易時間 (08:45-13:45)", flush=True)
+        elif 15 <= current_hour or current_hour < 5:
+            print("🌙 當前時段: 夜盤交易時間 (15:00-05:00)", flush=True)
+        else:
+            print("😴 當前時段: 休市時間", flush=True)
+        
+        print("🌐 Flask 服務準備中...", flush=True)
         print("=" * 70 + "\n", flush=True)
-        sys.stdout.flush()  # 強制輸出
-        try:
-            main()
-        except Exception as e:
-            print(f"❌ 監控執行緒錯誤: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
-    
-    t = threading.Thread(target=delayed_start, name="MonitorThread")
-    t.daemon = True
-    t.start()
-    print(f"✅ 監控執行緒已建立 (Thread ID: {t.ident})", flush=True)
-    
-    # Keep-alive 也延遲啟動
-    def delayed_keepalive():
-        import time
-        import sys
-        time.sleep(10)
-        
-        # 自動偵測 Render URL（從環境變數）
-        render_url = os.getenv('RENDER_EXTERNAL_URL')
-        if not render_url:
-            # 如果沒有環境變數，使用預設 URL
-            render_url = "https://danny-macd.onrender.com"
-        
-        print(f"🔄 Keep-alive 功能啟動（每 5 分鐘自動喚醒）", flush=True)
-        print(f"🌐 目標 URL: {render_url}", flush=True)
         sys.stdout.flush()
-        try:
-            keep_alive(render_url)
-        except Exception as e:
-            print(f"❌ Keep-alive 錯誤: {e}", flush=True)
-    
-    t2 = threading.Thread(target=delayed_keepalive, name="KeepAliveThread")
-    t2.daemon = True
-    t2.start()
-    print(f"✅ Keep-alive 執行緒已建立 (Thread ID: {t2.ident})", flush=True)
+        
+        # 延遲啟動監控執行緒，避免啟動超時
+        def delayed_start():
+            import time
+            import sys
+            time.sleep(5)  # 等待 Flask 完全啟動
+            print("\n" + "=" * 70, flush=True)
+            print("🤖 監控執行緒啟動中...", flush=True)
+            print("=" * 70 + "\n", flush=True)
+            sys.stdout.flush()  # 強制輸出
+            try:
+                main()
+            except Exception as e:
+                print(f"❌ 監控執行緒錯誤: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+        
+        t = threading.Thread(target=delayed_start, name="MonitorThread")
+        t.daemon = True
+        t.start()
+        print(f"✅ 監控執行緒已建立 (Thread ID: {t.ident})", flush=True)
+        
+        # Keep-alive 也延遲啟動
+        def delayed_keepalive():
+            import time
+            import sys
+            time.sleep(10)
+            
+            # 自動偵測 Render URL（從環境變數）
+            render_url = os.getenv('RENDER_EXTERNAL_URL')
+            if not render_url:
+                # 如果沒有環境變數，使用預設 URL
+                render_url = "https://danny-macd.onrender.com"
+            
+            print(f"🔄 Keep-alive 功能啟動（每 5 分鐘自動喚醒）", flush=True)
+            print(f"🌐 目標 URL: {render_url}", flush=True)
+            sys.stdout.flush()
+            try:
+                keep_alive(render_url)
+            except Exception as e:
+                print(f"❌ Keep-alive 錯誤: {e}", flush=True)
+        
+        t2 = threading.Thread(target=delayed_keepalive, name="KeepAliveThread")
+        t2.daemon = True
+        t2.start()
+        print(f"✅ Keep-alive 執行緒已建立 (Thread ID: {t2.ident})", flush=True)
 
-    print("✅ Flask 服務準備就緒，開始監聽 port 10000...")
-    print("=" * 70 + "\n")
-    app.run(host="0.0.0.0", port=10000)
+        print("✅ Flask 服務準備就緒，開始監聽 port 10000...")
+        print("=" * 70 + "\n")
+        app.run(host="0.0.0.0", port=10000)
+        
+    except Exception as e:
+        print(f"❌ 系統啟動失敗: {e}", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
