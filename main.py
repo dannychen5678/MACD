@@ -703,12 +703,12 @@ def optimize_parameters(stats):
     print(f"新參數: slope_threshold={params.slope_threshold}, lookback={params.lookback}")
     print("=" * 80 + "\n")
     
-    # 發送通知
-    msg = (f"🤖 參數已自動優化\n"
-           f"勝率: {success_rate:.1f}%\n"
-           f"slope: {old_slope} → {params.slope_threshold}\n"
-           f"lookback: {old_lookback} → {params.lookback}")
-    send_alert(msg)
+    # 不發送 Telegram 通知，只記錄在 log
+    # msg = (f"🤖 參數已自動優化\n"
+    #        f"勝率: {success_rate:.1f}%\n"
+    #        f"slope: {old_slope} → {params.slope_threshold}\n"
+    #        f"lookback: {old_lookback} → {params.lookback}")
+    # send_alert(msg)
     
     return True
 
